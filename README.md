@@ -11,4 +11,5 @@
 程序截图：
 
 <img width="1192" height="624" alt="屏幕截图 2025-11-19 230117" src="https://github.com/user-attachments/assets/91d3a036-8386-4c4c-8cf1-0a4a8c1ec875" />
-![b3bbe10fbe1fcb40dc7ecafcb4ef3fd6](https://github.com/user-attachments/assets/137c02c1-e130-4f25-ac64-71aa025c16d6)
+
+![b3bbe10fbe1fcb40dc7ecafcb4ef3fd6](https://github.com/user-attachments/assets/9bef35a7-f791-4f70-854b-4b5ee723993d)
