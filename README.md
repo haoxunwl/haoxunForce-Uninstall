@@ -2,7 +2,22 @@
 
 浩讯亿通cpu专业测试工具1.0.1 开源-免费-绿色-无毒-专业 问题反馈：邮箱zhangyuhao@haoxun.cc（请备注来意，以及遇到的问题并请附带提供截图或视频，感谢支持！） 官方QQ群：182352621 github开源地址：[https://github.com/haoxunwl/-cpu-/tree/main](https://github.com/haoxunwl/haoxunForce-Uninstall/tree/main) 本程序采用python开发，采用MIT开源协议，可二次开发，欢迎大家在基于本程序上开发各种有意思好用好玩的功能！打包后的下载链接：通过网盘分享的文件：浩讯电脑急救强力删除工具.zip
 链接: https://pan.baidu.com/s/120eAGLTwCxz1BvF7g22vVg 提取码: hxdn 复制这段内容后打开百度网盘手机App，操作更方便哦
+
+
+
+
+
+
 程序截图：
+
+<img width="1192" height="624" alt="屏幕截图 2025-11-19 230117" src="https://github.com/user-attachments/assets/91d3a036-8386-4c4c-8cf1-0a4a8c1ec875" />
+
+这个是老版本的程序（上方为全新的程序）：
 <img width="789" height="821" alt="屏幕截图 2025-11-10 084032" src="https://github.com/user-attachments/assets/720742e6-b0e3-45a3-967c-d0755d780562" />
+
+
+
+
+
 
 ![b3bbe10fbe1fcb40dc7ecafcb4ef3fd6](https://github.com/user-attachments/assets/137c02c1-e130-4f25-ac64-71aa025c16d6)
