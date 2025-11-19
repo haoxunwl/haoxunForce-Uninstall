@@ -11,13 +11,4 @@
 程序截图：
 
 <img width="1192" height="624" alt="屏幕截图 2025-11-19 230117" src="https://github.com/user-attachments/assets/91d3a036-8386-4c4c-8cf1-0a4a8c1ec875" />
-
-这个是老版本的程序（上方为全新的程序）：
-<img width="789" height="821" alt="屏幕截图 2025-11-10 084032" src="https://github.com/user-attachments/assets/720742e6-b0e3-45a3-967c-d0755d780562" />
-
-
-
-
-
-
 ![b3bbe10fbe1fcb40dc7ecafcb4ef3fd6](https://github.com/user-attachments/assets/137c02c1-e130-4f25-ac64-71aa025c16d6)
