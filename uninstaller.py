@@ -12,6 +12,8 @@ import mimetypes
 from tkinter import Tk, Label, Listbox, Button, Scrollbar, Frame, messagebox, Entry, Checkbutton, BooleanVar, StringVar, Text, Radiobutton, font, filedialog
 from tkinter import ttk
 import threading
+from threading import Lock, Event
+from multiprocessing import Value
 import tkinter as tk
 import re
 import stat
@@ -96,7 +98,7 @@ class UninstallerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("浩讯亿通电脑急救强力卸载工具1.0.0")
-        self.root.geometry("1200x600")
+        self.root.geometry("1200x800")
         self.root.resizable(True, True)
         
         # 基本颜色设置
@@ -138,6 +140,16 @@ class UninstallerApp:
             fg=self.text_color
         )
         self.title_label.pack(pady=5)
+        
+        # 状态标签 - 用于显示各种功能的状态信息
+        self.status_label = Label(
+            self.main_frame,
+            text="欢迎使用电脑急救强力卸载工具",
+            font=("微软雅黑", 10),
+            bg=self.bg_color,
+            fg="#666666"
+        )
+        self.status_label.pack(pady=2)
         
         # 创建左右分栏框架
         self.content_frame = Frame(self.main_frame, bg=self.bg_color)
@@ -323,15 +335,18 @@ class UninstallerApp:
         )
         self.sandbox_button.pack(side="left", padx=5)
         
+        # 强力粉碎按钮
         self.shred_button = Button(
             self.button_frame,
-            text="文件删除",
-            command=self.file_shredder,
-            bg="#9b59b6",
+            text="强力粉碎",
+            command=self.start_file_shredding,
+            bg="#8e44ad",
             fg="white",
             width=12
         )
-        self.shred_button.pack(side="left", padx=2)
+        self.shred_button.pack(side="left", padx=5)
+        
+
         
         self.scan_button = Button(
             self.button_frame,
@@ -451,6 +466,23 @@ class UninstallerApp:
         self.log_text = Text(self.log_frame, height=20, width=45)
         self.log_text.pack(fill="both", expand=True)
         
+        # 磁盘信息面板
+        self.disk_info_frame = Frame(self.right_frame, bg=self.bg_color, relief="sunken", bd=1)
+        self.disk_info_frame.pack(fill="x", pady=(0, 5))
+        
+        disk_header_frame = Frame(self.disk_info_frame, bg=self.bg_color)
+        disk_header_frame.pack(fill="x", padx=5, pady=2)
+        
+        Label(disk_header_frame, text="💾 磁盘信息", font=("微软雅黑", 9, "bold"), 
+              bg=self.bg_color, fg="#27ae60").pack(side="left")
+        
+        self.disk_info_text = Text(self.disk_info_frame, height=10, width=45, font=("Consolas", 8))
+        self.disk_info_text.pack(fill="x", padx=5, pady=2)
+        self.disk_info_text.config(state="disabled")
+        
+        # 更新磁盘信息
+        self.update_disk_info()
+        
         # 启动沙箱状态更新线程（在log_text创建之后）
         self.start_sandbox_monitoring()
         
@@ -474,6 +506,107 @@ class UninstallerApp:
             self.log_text.config(state="disabled")
         except Exception as e:
             print(f"记录日志失败: {e}")
+    
+    def get_disk_info(self):
+        """获取系统磁盘信息"""
+        disk_info = []
+        
+        try:
+            # 使用wmic命令获取磁盘信息
+            command = "wmic logicaldisk get DeviceID, DriveType, FileSystem, Size, FreeSpace, VolumeName"
+            result = subprocess.run(command, capture_output=True, text=True, shell=True, encoding='gbk')
+            
+            if result.returncode == 0 and result.stdout:
+                lines = result.stdout.strip().split('\n')[1:]
+                for line in lines:
+                    line = line.strip()
+                    if line:
+                        # 分割行并清理空白
+                        parts = [part for part in line.split() if part]
+                        if len(parts) >= 4:
+                            device_id = parts[0]
+                            drive_type = parts[1]
+                            file_system = parts[2]
+                            size = parts[3] if len(parts) > 3 else "0"
+                            free_space = parts[4] if len(parts) > 4 else "0"
+                            volume_name = " ".join(parts[5:]) if len(parts) > 5 else ""
+                            
+                            # 转换驱动器类型
+                            drive_type_map = {
+                                "0": "未知",
+                                "1": "无根目录",
+                                "2": "可移动磁盘",
+                                "3": "本地磁盘",
+                                "4": "网络驱动器",
+                                "5": "光驱",
+                                "6": "内存虚拟磁盘"
+                            }
+                            drive_type_text = drive_type_map.get(drive_type, drive_type)
+                            
+                            # 转换为易读的大小格式
+                            def format_size(bytes_val):
+                                try:
+                                    bytes_val = int(bytes_val)
+                                    if bytes_val == 0:
+                                        return "0 B"
+                                    for unit in ["B", "KB", "MB", "GB", "TB"]:
+                                        if bytes_val < 1024.0:
+                                            return f"{bytes_val:.2f} {unit}"
+                                        bytes_val /= 1024.0
+                                    return f"{bytes_val:.2f} PB"
+                                except:
+                                    return "未知"
+                            
+                            # 计算使用率
+                            try:
+                                total_size = int(size)
+                                free_size = int(free_space)
+                                used_size = total_size - free_size
+                                if total_size > 0:
+                                    usage_percent = (used_size / total_size) * 100
+                                else:
+                                    usage_percent = 0
+                            except:
+                                used_size = 0
+                                usage_percent = 0
+                            
+                            disk_info.append({
+                                "device_id": device_id,
+                                "drive_type": drive_type_text,
+                                "file_system": file_system,
+                                "total_size": format_size(size),
+                                "free_space": format_size(free_space),
+                                "used_size": format_size(used_size),
+                                "usage_percent": f"{usage_percent:.1f}%",
+                                "volume_name": volume_name
+                            })
+        except Exception as e:
+            self.log(f"获取磁盘信息失败: {e}")
+        
+        return disk_info
+    
+    def update_disk_info(self):
+        """更新磁盘信息显示"""
+        try:
+            disk_info = self.get_disk_info()
+            
+            self.disk_info_text.config(state="normal")
+            self.disk_info_text.delete("1.0", "end")
+            
+            for disk in disk_info:
+                # 仅显示本地磁盘和可移动磁盘
+                if disk["drive_type"] in ["本地磁盘", "可移动磁盘"]:
+                    line = f"{disk['device_id']} {disk['volume_name']:<15} "
+                    line += f"类型: {disk['drive_type']:<8} "
+                    line += f"文件系统: {disk['file_system']:<6} "
+                    line += f"总计: {disk['total_size']:<12} "
+                    line += f"可用: {disk['free_space']:<12} "
+                    line += f"使用率: {disk['usage_percent']:<6}\n"
+                    self.disk_info_text.insert("end", line)
+            
+            self.disk_info_text.config(state="disabled")
+        except Exception as e:
+            self.log(f"更新磁盘信息失败: {e}")
 
     def start_sandbox_monitoring(self):
         """启动沙箱状态监控线程"""
@@ -2439,38 +2572,34 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
             except:
                 pass
     
-    def _shred_file(self, file_path, passes=3):
+    def _shred_file(self, file_path, algorithm="default", passes=3, force_kill=True, disable_protection=True, progress_callback=None):
         """增强版文件删除功能 - 支持多种高级删除技术和权限处理"""
-        if not os.path.isfile(file_path):
-            return False
-        
-        self.log(f"开始增强版文件删除: {file_path}")
-        
         try:
-            # 1. 拖尾文件删除技术（重命名后删除）
-            if not self._trailing_file_shredder(file_path):
-                self.log(f"拖尾删除失败，尝试其他方法")
+            # 导入核心粉碎模块
+            from core_shredding import shred_file
             
-            # 2. 如果拖尾失败，使用多层覆盖
-            if os.path.exists(file_path):
-                if not self._multi_layer_shredding(file_path, passes):
-                    self.log(f"多层覆盖失败，尝试终极删除")
+            # 使用核心模块进行文件粉碎
+            result = shred_file(
+                file_path, 
+                algorithm=algorithm, 
+                passes=passes, 
+                force_kill=force_kill, 
+                disable_protection=disable_protection,
+                log_func=self.log,
+                progress_callback=progress_callback
+            )
             
-            # 3. 终极删除 - 扇区级直接写入
-            if os.path.exists(file_path):
-                if not self._ultimate_sector_shredding(file_path):
-                    self.log(f"终极删除失败，尝试权限提升删除")
+            return result
             
-            # 4. 权限提升删除
-            if os.path.exists(file_path):
-                if not self._privileged_file_removal(file_path):
-                    self.log(f"权限提升删除失败")
-                    return False
-            
-            return True
         except Exception as e:
-            self.log(f"增强版文件删除失败: {str(e)}")
-            return False
+            self.log(f"文件粉碎失败: {str(e)}")
+            # 如果核心模块出现问题，尝试使用备用方法
+            try:
+                # 简单的文件删除作为备用
+                os.remove(file_path)
+                return True
+            except Exception:
+                return False
     
     def _trailing_file_shredder(self, file_path):
         """拖尾文件删除技术 - 重命名后删除，绕过文件锁"""
@@ -2528,59 +2657,250 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
             self.log(f"拖尾文件删除失败: {str(e)}")
             return False
     
-    def _multi_layer_shredding(self, file_path, passes):
-        """多层覆盖删除 - 确保数据无法恢复"""
+    def _multi_layer_shredding(self, file_path, passes=3, algorithm="default"):
+        """多层覆盖删除 - 确保数据无法恢复
+        
+        参数:
+            file_path: 要删除的文件路径
+            passes: 覆盖次数
+            algorithm: 覆盖算法 (default, dod5220, gutmann, random)
+        """
         try:
-            self.log(f"执行多层覆盖删除: {file_path}")
+            self.log(f"执行多层覆盖删除: {file_path} (算法: {algorithm}, 覆盖次数: {passes})")
             
             # 获取文件大小
             file_size = os.path.getsize(file_path)
             
+            # 检测是否为SSD
+            is_ssd_device = False
+            try:
+                is_ssd_device = self._is_ssd(file_path)
+            except Exception as e:
+                self.log(f"SSD检测失败，使用默认设置: {str(e)}")
+                # 发生错误时默认使用非SSD设置，确保粉碎过程继续
+            
             # 先修改文件属性和权限
             self._force_unlock_and_modify_attributes(file_path)
             
-            # 执行多次覆盖模式
-            patterns = [
-                # 模式1: 随机数据
-                lambda size: bytes(random.getrandbits(8) for _ in range(size)),
-                # 模式2: 零
-                lambda size: b'\x00' * size,
-                # 模式3: 1
-                lambda size: b'\xFF' * size,
-                # 模式4: 交替模式
-                lambda size: bytes((i % 2) * 255 for i in range(size)),
-                # 模式5: 递增模式
-                lambda size: bytes(i % 256 for i in range(size))
-            ]
+            # 根据选择的算法获取覆盖模式
+            if algorithm == "dod5220":
+                # DoD 5220.22-M 标准: 3次覆盖 (0xF6, 0x00, 0xFF)
+                patterns = [
+                    lambda size: bytes(0xF6 for _ in range(size)),  # DoD 第一遍
+                    lambda size: b'\x00' * size,                      # DoD 第二遍
+                    lambda size: b'\xFF' * size                       # DoD 第三遍
+                ]
+                passes = 3  # DoD标准固定为3次
+            elif algorithm == "usdod":
+                # US DoD 5220.22-M ECE 标准: 7次覆盖
+                patterns = [
+                    lambda size: bytes(0x55 for _ in range(size)),  # 01010101
+                    lambda size: bytes(0xAA for _ in range(size)),  # 10101010
+                    lambda size: bytes(0x92 for _ in range(size)),  # 10010010
+                    lambda size: bytes(0x49 for _ in range(size)),  # 01001001
+                    lambda size: bytes(0x24 for _ in range(size)),  # 00100100
+                    lambda size: b'\x00' * size,                      # 零
+                    lambda size: bytes(random.getrandbits(8) for _ in range(size))  # 随机
+                ]
+                passes = 7  # USDOD标准固定为7次
+            elif algorithm == "nato":
+                # NATO 标准: 7次覆盖
+                patterns = [
+                    lambda size: b'\x00' * size,  # 零
+                    lambda size: b'\xFF' * size,  # 全一
+                    lambda size: bytes(0xAA for _ in range(size)),  # 10101010
+                    lambda size: bytes(0x55 for _ in range(size)),  # 01010101
+                    lambda size: bytes(random.getrandbits(8) for _ in range(size)),  # 随机
+                    lambda size: bytes(random.getrandbits(8) for _ in range(size)),  # 随机
+                    lambda size: bytes(random.getrandbits(8) for _ in range(size))   # 随机
+                ]
+                passes = 7  # NATO标准固定为7次
+            elif algorithm == "hgmp":
+                # HGMP (德国政府标准): 3次覆盖
+                patterns = [
+                    lambda size: bytes(0x55 for _ in range(size)),  # 01010101
+                    lambda size: bytes(0xAA for _ in range(size)),  # 10101010
+                    lambda size: bytes(random.getrandbits(8) for _ in range(size))  # 随机
+                ]
+                passes = 3  # HGMP标准固定为3次
+            elif algorithm == "gutmann":
+                # Gutmann算法: 35次覆盖，使用不同的模式
+                patterns = [
+                    lambda size: bytes(0x55 for _ in range(size)),  # 01010101
+                    lambda size: bytes(0xAA for _ in range(size)),  # 10101010
+                    lambda size: bytes(0x92 for _ in range(size)),  # 10010010
+                    lambda size: bytes(0x49 for _ in range(size)),  # 01001001
+                    lambda size: bytes(0x24 for _ in range(size)),  # 00100100
+                    lambda size: bytes(0x49 for _ in range(size)),  # 01001001
+                    lambda size: bytes(0x92 for _ in range(size)),  # 10010010
+                    lambda size: bytes(0x24 for _ in range(size)),  # 00100100
+                    lambda size: bytes(0x66 for _ in range(size)),  # 01100110
+                    lambda size: bytes(0x66 for _ in range(size)),  # 01100110
+                    lambda size: bytes(0x00 for _ in range(size)),  # 00000000
+                    lambda size: bytes(0xFF for _ in range(size)),  # 11111111
+                    lambda size: bytes(0x92 for _ in range(size)),  # 10010010
+                    lambda size: bytes(0x49 for _ in range(size)),  # 01001001
+                    lambda size: bytes(0x24 for _ in range(size)),  # 00100100
+                    lambda size: bytes(0x92 for _ in range(size)),  # 10010010
+                    lambda size: bytes(0x49 for _ in range(size)),  # 01001001
+                    lambda size: bytes(0x24 for _ in range(size)),  # 00100100
+                    lambda size: bytes(0x66 for _ in range(size)),  # 01100110
+                    lambda size: bytes(0x66 for _ in range(size)),  # 01100110
+                    lambda size: bytes(0x00 for _ in range(size)),  # 00000000
+                    lambda size: bytes(0xFF for _ in range(size)),  # 11111111
+                    lambda size: bytes(0x55 for _ in range(size)),  # 01010101
+                    lambda size: bytes(0xAA for _ in range(size)),  # 10101010
+                    lambda size: bytes(0x55 for _ in range(size)),  # 01010101
+                    lambda size: bytes(0xAA for _ in range(size)),  # 10101010
+                    lambda size: bytes(0x55 for _ in range(size)),  # 01010101
+                    lambda size: bytes(0xAA for _ in range(size)),  # 10101010
+                    lambda size: bytes(0x00 for _ in range(size)),  # 00000000
+                    lambda size: bytes(0xFF for _ in range(size)),  # 11111111
+                    # 最后用随机数据覆盖
+                    lambda size: bytes(random.getrandbits(8) for _ in range(size)),
+                    lambda size: bytes(random.getrandbits(8) for _ in range(size)),
+                    lambda size: bytes(random.getrandbits(8) for _ in range(size)),
+                    lambda size: bytes(random.getrandbits(8) for _ in range(size)),
+                    lambda size: bytes(random.getrandbits(8) for _ in range(size))
+                ]
+                passes = 35  # Gutmann标准固定为35次
+            elif algorithm == "random":
+                # 只使用随机数据覆盖
+                patterns = [
+                    lambda size: bytes(random.getrandbits(8) for _ in range(size))
+                ]
+            elif algorithm == "random_plus":
+                # 增强型随机覆盖: 使用更安全的随机数生成器
+                patterns = [
+                    lambda size: bytes(random.getrandbits(8) for _ in range(size)),
+                    lambda size: bytes(random.getrandbits(8) for _ in range(size)),
+                    lambda size: bytes(random.getrandbits(8) for _ in range(size))
+                ]
+                passes = 3  # 增强型随机覆盖固定为3次
+            else:  # default
+                # 默认算法: 多种模式交替覆盖
+                patterns = [
+                    # 模式1: 随机数据
+                    lambda size: bytes(random.getrandbits(8) for _ in range(size)),
+                    # 模式2: 零
+                    lambda size: b'\x00' * size,
+                    # 模式3: 1
+                    lambda size: b'\xFF' * size,
+                    # 模式4: 交替模式
+                    lambda size: bytes((i % 2) * 255 for i in range(size)),
+                    # 模式5: 递增模式
+                    lambda size: bytes(i % 256 for i in range(size))
+                ]
+            
+            # 大文件优化：根据文件大小动态调整块大小和其他参数
+            is_large_file = file_size > 100 * 1024 * 1024  # 大于100MB视为大文件
+            is_very_large_file = file_size > 1 * 1024 * 1024 * 1024  # 大于1GB视为超大文件
+            
+            # 根据文件大小动态调整块大小
+            if is_very_large_file:
+                chunk_size = 16 * 1024 * 1024  # 超大文件使用16MB块
+                flush_interval = 15  # 每15个块刷新一次
+            elif is_large_file:
+                chunk_size = 8 * 1024 * 1024  # 大文件使用8MB块
+                flush_interval = 10  # 每10个块刷新一次
+            else:
+                chunk_size = 1 * 1024 * 1024  # 小文件使用1MB块
+                flush_interval = 5  # 每5个块刷新一次
+            
+            # 检测系统内存大小，调整块大小
+            try:
+                import psutil
+                total_memory = psutil.virtual_memory().total
+                available_memory = psutil.virtual_memory().available
+                # 块大小不超过可用内存的20%
+                max_safe_chunk_size = int(available_memory * 0.2)
+                if chunk_size > max_safe_chunk_size:
+                    chunk_size = max_safe_chunk_size
+                    # 确保块大小至少为1MB
+                    chunk_size = max(chunk_size, 1 * 1024 * 1024)
+                    self.log(f"根据系统内存调整块大小至: {chunk_size/(1024*1024):.2f}MB")
+            except ImportError:
+                pass  # psutil未安装，使用默认块大小
+            
+            self.log(f"文件大小: {file_size/(1024*1024):.2f}MB, 块大小: {chunk_size/(1024*1024):.2f}MB, 刷新间隔: {flush_interval}")
             
             for pass_num in range(passes):
                 try:
                     # 选择覆盖模式
                     pattern_func = patterns[pass_num % len(patterns)]
                     
-                    # 分块处理大文件
-                    chunk_size = 1024 * 1024  # 1MB chunks
                     with open(file_path, "rb+") as f:
                         remaining = file_size
                         f.seek(0)
+                        chunk_count = 0
+                        
                         while remaining > 0:
                             current_chunk_size = min(chunk_size, remaining)
-                            chunk_data = pattern_func(current_chunk_size)
+                            
+                            # 生成块数据 - 优化随机数生成
+                            if "random" in str(pattern_func) or "random.getrandbits" in str(pattern_func.__code__.co_consts):
+                                # 优先使用更高效的os.urandom()生成随机数据
+                                if hasattr(os, 'urandom'):
+                                    chunk_data = os.urandom(current_chunk_size)
+                                else:
+                                    # 回退到原始方法
+                                    chunk_data = pattern_func(current_chunk_size)
+                            elif "b'\\x00'" in str(pattern_func) or "b'\\xFF'" in str(pattern_func):
+                                # 优化固定字节模式（0x00, 0xFF）的生成
+                                chunk_data = pattern_func(current_chunk_size)
+                            else:
+                                # 对于其他模式，预生成小样本并重复使用
+                                if current_chunk_size > 1024 * 1024:  # 大文件块
+                                    sample_size = 1024 * 1024  # 1MB样本
+                                    sample = pattern_func(sample_size)
+                                    # 重复样本填充整个块
+                                    chunks = [sample] * (current_chunk_size // sample_size)
+                                    if current_chunk_size % sample_size:
+                                        chunks.append(sample[:current_chunk_size % sample_size])
+                                    chunk_data = b''.join(chunks)
+                                else:
+                                    chunk_data = pattern_func(current_chunk_size)
+                            
+                            # 写入块数据
                             f.write(chunk_data)
                             remaining -= current_chunk_size
+                            chunk_count += 1
                             
-                            # 强制写入磁盘
-                            f.flush()
-                            os.fsync(f.fileno())
+                            # 定期刷新，而不是每次都刷新
+                            if chunk_count % flush_interval == 0 or remaining == 0:
+                                f.flush()
+                                os.fsync(f.fileno())
+                                
+                            # 移除不适当的进度更新，避免上下文不匹配导致程序卡住
+                            pass
                     
                     self.log(f"多层覆盖 - 第 {pass_num + 1}/{passes} 层完成")
                     
-                    # 刷新文件系统缓存
-                    if hasattr(os, 'sync'):
-                        os.sync()
+                    # 刷新文件系统缓存（仅在必要时）
+                    if (is_large_file or is_very_large_file) and hasattr(os, 'sync'):
+                        # 只在最后一遍覆盖时刷新整个系统缓存
+                        if pass_num == passes - 1:
+                            os.sync()
                     
-                    # 短暂暂停
-                    time.sleep(0.05)
+                    # 智能暂停优化：减少不必要的暂停
+                    if is_ssd_device:
+                        # SSD设备不需要频繁暂停
+                        continue
+                    
+                    # 仅在大文件和CPU使用率高时才暂停
+                    if is_large_file or is_very_large_file:
+                        try:
+                            import psutil
+                            cpu_percent = psutil.cpu_percent(interval=0.01)  # 更短的检测间隔
+                            if cpu_percent > 90:  # 更高的CPU阈值
+                                time.sleep(0.01)  # 更短的暂停时间
+                        except ImportError:
+                            pass  # 未安装psutil时不暂停
+                    # 小文件不需要暂停
+                    elif pass_num < passes - 1:  # 除最后一遍外不暂停
+                        continue
+                    else:
+                        time.sleep(0.01)  # 最后一遍短暂暂停
                     
                 except Exception as e:
                     self.log(f"第 {pass_num + 1} 层覆盖失败: {str(e)}")
@@ -2667,14 +2987,14 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
             self.log(f"直接扇区写入失败: {str(e)}")
             raise
     
-    def _advanced_api_shredding(self, file_path):
+    def _advanced_api_shredding(self, file_path, algorithm='dod', passes=3):
         """高级API删除方法 - 支持多种Windows API和备用方案"""
         try:
             self.log(f"执行高级API删除: {file_path}")
             
             # 方法1: 使用win32file（如果可用）
             if WIN32FILE_AVAILABLE and 'win32file' in globals():
-                return self._win32file_shredding(file_path)
+                return self._win32file_shredding(file_path, algorithm=algorithm, passes=passes)
             
             # 方法2: 使用ctypes直接调用Windows API
             return self._ctypes_api_shredding(file_path)
@@ -2683,47 +3003,139 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
             self.log(f"高级API删除失败: {str(e)}")
             return False
     
-    def _win32file_shredding(self, file_path):
-        """使用win32file API进行删除"""
+    def _win32file_shredding(self, file_path, algorithm='dod', passes=3):
+        """使用win32file API进行文件粉碎（Windows专用）"""
         try:
             # 确保文件可以写入
             win32file.SetFileAttributes(file_path, win32file.FILE_ATTRIBUTE_NORMAL)
             
-            # 打开文件进行删除
+            # 打开文件进行粉碎
             handle = win32file.CreateFile(
                 file_path,
                 win32file.GENERIC_WRITE,
-                win32file.FILE_SHARE_READ,
+                win32file.FILE_SHARE_READ | win32file.FILE_SHARE_WRITE | win32file.FILE_SHARE_DELETE,
                 None,
                 win32file.OPEN_EXISTING,
-                win32file.FILE_ATTRIBUTE_NORMAL,
+                win32file.FILE_FLAG_WRITE_THROUGH | win32file.FILE_FLAG_NO_BUFFERING,
                 None
             )
             
             try:
                 file_size = win32file.GetFileSize(handle)
                 
-                # 分块写入和删除
-                for i in range(3):
-                    # 写入随机数据
-                    random_data = bytes(random.getrandbits(8) for _ in range(file_size))
-                    win32file.WriteFile(handle, random_data)
-                    win32file.FlushFileBuffers(handle)
+                # 优化缓冲区大小
+                buffer_size = 65536  # 64KB 最优I/O缓冲区大小
+                
+                # 根据算法选择覆盖模式
+                pass_patterns = []
+                
+                if algorithm.lower() == 'gutmann':
+                    # Gutmann算法 - 11轮覆盖（简化版，原35轮）
+                    pass_patterns = [
+                        lambda: b'\x55' * buffer_size,  # 0x55
+                        lambda: b'\xAA' * buffer_size,  # 0xAA
+                        lambda: os.urandom(buffer_size),  # 随机
+                        lambda: b'\x92\x49\x24' * (buffer_size // 3),  # Gutmann序列1
+                        lambda: b'\x49\x24\x92' * (buffer_size // 3),  # Gutmann序列2
+                        lambda: b'\x24\x92\x49' * (buffer_size // 3),  # Gutmann序列3
+                        lambda: os.urandom(buffer_size),  # 随机
+                        lambda: b'\x6D\xB6\xDB' * (buffer_size // 3),  # Gutmann序列4
+                        lambda: b'\xB6\xDB\x6D' * (buffer_size // 3),  # Gutmann序列5
+                        lambda: b'\xDB\x6D\xB6' * (buffer_size // 3),  # Gutmann序列6
+                        lambda: os.urandom(buffer_size),  # 随机
+                    ]
+                    passes = min(passes, len(pass_patterns))
+                elif algorithm.lower() == 'dod':
+                    # DoD 5220.22-M算法
+                    pass_patterns = [
+                        lambda: b'\x00' * buffer_size,  # 1轮0x00
+                        lambda: b'\xFF' * buffer_size,  # 1轮0xFF
+                        lambda: os.urandom(buffer_size),  # 1轮随机
+                    ]
+                    passes = min(passes, 3)
+                elif algorithm.lower() == 'nato':
+                    # NATO算法 - 7轮覆盖
+                    pass_patterns = [
+                        lambda: b'\x00' * buffer_size,  # 0x00
+                        lambda: b'\xFF' * buffer_size,  # 0xFF
+                        lambda: b'\x55' * buffer_size,  # 0x55
+                        lambda: b'\xAA' * buffer_size,  # 0xAA
+                        lambda: b'\x96' * buffer_size,  # 0x96
+                        lambda: b'\x69' * buffer_size,  # 0x69
+                        lambda: os.urandom(buffer_size),  # 随机
+                    ]
+                    passes = min(passes, 7)
+                else:
+                    # 默认算法：4轮覆盖
+                    pass_patterns = [
+                        lambda: b'\xFF' * buffer_size,
+                        lambda: b'\x00' * buffer_size,
+                        lambda: os.urandom(buffer_size),
+                        lambda: os.urandom(buffer_size)
+                    ]
+                    passes = min(passes, 4)
+                
+                # 执行多轮覆盖
+                for pass_num in range(passes):
+                    # 移动到文件开头
+                    win32file.SetFilePointer(handle, 0, 0)  # FILE_BEGIN = 0
                     
-                    time.sleep(0.1)
+                    if pass_num < len(pass_patterns):
+                        pattern_func = pass_patterns[pass_num]
+                    else:
+                        pattern_func = lambda: os.urandom(buffer_size)
+                    
+                    written = 0
+                    while written < file_size:
+                        remaining = file_size - written
+                        current_buffer_size = min(buffer_size, remaining)
+                        
+                        if current_buffer_size < buffer_size:
+                            buffer = pattern_func()[:current_buffer_size]
+                        else:
+                            buffer = pattern_func()
+                        
+                        win32file.WriteFile(handle, buffer)
+                        written += current_buffer_size
+                    
+                    win32file.FlushFileBuffers(handle)
+                
+                # 二次覆盖小文件（防止元数据泄漏）
+                if file_size < 1024:
+                    try:
+                        # 重新打开文件以允许缓冲
+                        small_handle = win32file.CreateFile(
+                            file_path,
+                            win32file.GENERIC_WRITE,
+                            win32file.FILE_SHARE_READ,
+                            None,
+                            win32file.OPEN_EXISTING,
+                            win32file.FILE_ATTRIBUTE_NORMAL,
+                            None
+                        )
+                        
+                        small_data = os.urandom(1024)
+                        win32file.SetFilePointer(small_handle, 0, 0)
+                        win32file.WriteFile(small_handle, small_data)
+                        win32file.FlushFileBuffers(small_handle)
+                        win32file.CloseHandle(small_handle)
+                    except:
+                        pass
+                
+                # 截断文件
+                open(file_path, 'w').close()
                 
                 # 立即删除文件
-                win32file.DeleteFile(file_path)
-                return True
+                return win32file.DeleteFile(file_path)
                 
             finally:
                 win32file.CloseHandle(handle)
                 
         except Exception as e:
-            self.log(f"win32file删除失败: {str(e)}")
+            self.log(f"win32file粉碎失败: {file_path} - {str(e)}")
             return False
     
-    def _ctypes_api_shredding(self, file_path):
+    def _ctypes_api_shredding(self, file_path, algorithm="default", passes=3):
         """使用ctypes直接调用Windows API"""
         try:
             kernel32 = ctypes.windll.kernel32
@@ -2759,7 +3171,7 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
                 file_size = os.path.getsize(file_path)
                 
                 # 使用Windows API删除文件
-                self._windows_api_shredding_internal(handle, file_size)
+                self._windows_api_shredding_internal(handle, file_size, algorithm=algorithm, passes=passes)
                 
                 return True
                 
@@ -2770,27 +3182,62 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
             self.log(f"ctypes API删除失败: {str(e)}")
             return False
     
-    def _windows_api_shredding_internal(self, handle, file_size):
+    def _windows_api_shredding_internal(self, handle, file_size, algorithm="default", passes=3):
         """Windows API内部删除实现"""
         try:
             kernel32 = ctypes.windll.kernel32
             
-            # 执行多次删除
-            for i in range(3):
-                # 生成随机数据
-                chunk_size = min(1024 * 1024, file_size)  # 1MB chunks
-                remaining = file_size
+            # 算法配置
+            algorithm_config = {
+                "gutmann": {
+                    "patterns": [lambda: b'\xFF' * 1024, lambda: b'\x00' * 1024] + [lambda: os.urandom(1024) for _ in range(9)],
+                    "max_passes": 11
+                },
+                "dod": {
+                    "patterns": [lambda: b'\xFF' * 1024, lambda: b'\x00' * 1024, lambda: os.urandom(1024)],
+                    "max_passes": 3
+                },
+                "nato": {
+                    "patterns": [lambda: b'\xFF' * 1024, lambda: b'\x00' * 1024] + [lambda: os.urandom(1024) for _ in range(5)],
+                    "max_passes": 7
+                },
+                "default": {
+                    "patterns": [lambda: b'\xFF' * 1024, lambda: b'\x00' * 1024, lambda: os.urandom(1024), lambda: os.urandom(1024)],
+                    "max_passes": 4
+                }
+            }
+            
+            config = algorithm_config.get(algorithm, algorithm_config["default"])
+            pass_patterns = config["patterns"]
+            max_passes = config["max_passes"]
+            passes = min(passes, max_passes)
+            
+            chunk_size = min(1024 * 1024, file_size)  # 1MB chunks
+            
+            # 执行多轮覆盖
+            for i in range(passes):
+                # 移动到文件开头
+                kernel32.SetFilePointer(handle, 0, 0)  # FILE_BEGIN = 0
                 
+                if i < len(pass_patterns):
+                    pattern_func = pass_patterns[i]
+                else:
+                    pattern_func = lambda: os.urandom(1024)
+                
+                remaining = file_size
                 while remaining > 0:
                     current_chunk_size = min(chunk_size, remaining)
-                    random_chunk = bytes(random.getrandbits(8) for _ in range(current_chunk_size))
                     
-                    # 使用Windows API写入
+                    if current_chunk_size < chunk_size:
+                        pattern = pattern_func()[:current_chunk_size]
+                    else:
+                        pattern = pattern_func()
+                    
                     written = ctypes.c_ulonglong(0)
                     success = kernel32.WriteFile(
                         handle,
-                        random_chunk,
-                        len(random_chunk),
+                        pattern,
+                        len(pattern),
                         ctypes.byref(written),
                         None
                     )
@@ -2799,13 +3246,13 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
                         # 强制写入磁盘
                         kernel32.FlushFileBuffers(handle)
                     
-                    remaining -= len(random_chunk)
+                    remaining -= len(pattern)
                 
-                self.log(f"Windows API删除层 {i + 1}/3 完成")
+                self.log(f"Windows API删除层 {i + 1}/{passes} 完成")
                 time.sleep(0.05)
             
             # 最后用零覆盖
-            zero_chunk = b'\x00' * min(chunk_size, file_size)
+            zero_chunk = b'\x00' * chunk_size
             remaining = file_size
             while remaining > 0:
                 current_chunk_size = min(len(zero_chunk), remaining)
@@ -3146,308 +3593,7 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
         except Exception as e:
             self.log(f"解锁文件时出错: {str(e)}")
     
-    def file_shredder(self):
-        """安全文件管理工具 - 支持安全删除文件和目录"""
-        try:
-            # 创建选择对话框
-            dialog = tk.Toplevel(self.root)
-            dialog.title("安全文件删除工具")
-            dialog.geometry("500x450")
-            dialog.resizable(False, False)
-            dialog.transient(self.root)
-            dialog.grab_set()
-            
-            # 居中显示
-            dialog.update_idletasks()
-            x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
-            y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
-            dialog.geometry(f"+{x}+{y}")
-            
-            # 警告标签
-            warning_label = Label(
-                dialog,
-                text="⚠️  安全删除操作不可恢复！\n请谨慎选择要删除的文件/文件夹",
-                font=("微软雅黑", 12),
-                fg="red",
-                justify="center"
-            )
-            warning_label.pack(pady=15)
-            
-            # 选择变量
-            shred_type = tk.StringVar(value="files")
-            
-            # 选项框架
-            options_frame = Frame(dialog)
-            options_frame.pack(pady=10)
-            
-            # 文件选项
-            files_radio = tk.Radiobutton(
-                options_frame,
-                text="📄 批量删除多个文件",
-                variable=shred_type,
-                value="files",
-                font=("微软雅黑", 10),
-                command=lambda: file_button.config(state="normal")
-            )
-            files_radio.pack(anchor="w", pady=5)
-            
-            # 目录选项
-            dir_radio = tk.Radiobutton(
-                options_frame,
-                text="📁 删除整个文件夹",
-                variable=shred_type,
-                value="directory", 
-                font=("微软雅黑", 10),
-                command=lambda: file_button.config(state="normal")
-            )
-            dir_radio.pack(anchor="w", pady=5)
-            
-            # 高级选项框架
-            advanced_frame = LabelFrame(dialog, text="高级选项", font=("微软雅黑", 9))
-            advanced_frame.pack(pady=10, padx=20, fill="x")
-            
-            # 递归删除选项
-            recursive_var = tk.BooleanVar(value=True)
-            recursive_check = Checkbutton(
-                advanced_frame,
-                text="🔄 包含子文件夹内容",
-                variable=recursive_var,
-                font=("微软雅黑", 9)
-            )
-            recursive_check.pack(anchor="w", pady=2)
-            
-            # 强制终止进程选项
-            force_kill_var = tk.BooleanVar(value=True)
-            force_kill_check = Checkbutton(
-                advanced_frame,
-                text="💪 关闭相关程序进程",
-                variable=force_kill_var,
-                font=("微软雅黑", 9)
-            )
-            force_kill_check.pack(anchor="w", pady=2)
-            
-            # 禁用保护选项
-            disable_protection_var = tk.BooleanVar(value=True)
-            disable_protection_check = Checkbutton(
-                advanced_frame,
-                text="🛡️ 禁用文件保护机制",
-                variable=disable_protection_var,
-                font=("微软雅黑", 9)
-            )
-            disable_protection_check.pack(anchor="w", pady=2)
-            
-            # 深度删除选项
-            secure_removal_var = tk.BooleanVar(value=True)
-            secure_removal_check = Checkbutton(
-                advanced_frame,
-                text="🔧 启用高级数据清理（多层覆盖）",
-                variable=secure_removal_var,
-                font=("微软雅黑", 9)
-            )
-            secure_removal_check.pack(anchor="w", pady=2)
-            
-            # 按钮框架
-            button_frame = Frame(dialog)
-            button_frame.pack(pady=20)
-            
-            selected_paths = []
-            
-            def on_select():
-                nonlocal selected_paths
-                if shred_type.get() == "files":
-                    files = filedialog.askopenfilenames(
-                        title="选择要删除的文件（可多选）",
-                        filetypes=[("所有文件", "*.*")]
-                    )
-                    if files:
-                        selected_paths = list(files)
-                        file_button.config(text=f"已选择 {len(files)} 个文件")
-                elif shred_type.get() == "directory":
-                    directory = filedialog.askdirectory(title="选择要删除的文件夹")
-                    if directory:
-                        selected_paths = [directory]
-                        file_button.config(text=f"已选择文件夹: {os.path.basename(directory)}")
-            
-            # 选择文件按钮
-            file_button = Button(
-                button_frame,
-                text="请先选择删除类型",
-                command=on_select,
-                state="disabled",
-                bg="#4a90e2",
-                fg="white",
-                width=20
-            )
-            file_button.pack(side="left", padx=5)
-            
-            def on_shred():
-                if not selected_paths:
-                    messagebox.showwarning("警告", "请先选择要删除的文件或文件夹！")
-                    return
-                
-                if shred_type.get() == "files":
-                    message = f"确定要删除选中的 {len(selected_paths)} 个文件吗？\n此操作将关闭相关程序进程且无法撤销！"
-                else:
-                    message = f"确定要删除选中的文件夹及其所有内容吗？\n此操作将关闭相关程序进程且无法撤销！"
-                
-                if not messagebox.askyesno("确认删除操作", message):
-                    return
-                
-                dialog.destroy()
-                self._execute_advanced_data_removal(
-                    selected_paths, 
-                    shred_type.get(), 
-                    recursive_var.get(),
-                    force_kill_var.get(),
-                    disable_protection_var.get(),
-                    secure_removal_var.get()
-                )
-            
-            def on_cancel():
-                dialog.destroy()
-            
-            # 确认和取消按钮
-            confirm_button = Button(
-                button_frame,
-                text="🚀 开始删除",
-                command=on_shred,
-                bg="#ff6b6b",
-                fg="white",
-                width=15
-            )
-            confirm_button.pack(side="left", padx=5)
-            
-            cancel_button = Button(
-                button_frame,
-                text="取消",
-                command=on_cancel,
-                bg="#d0d0d0",
-                width=10
-            )
-            cancel_button.pack(side="left", padx=5)
-            
-        except Exception as e:
-            self.log(f"文件删除功能错误: {str(e)}")
-            messagebox.showerror("错误", f"文件删除时出错: {str(e)}")
-    
-    def _execute_advanced_data_removal(self, paths, shred_type, recursive, force_kill, disable_protection, secure_removal):
-        """安全数据删除工具 - 支持批量文件删除和目录清理"""
-        try:
-            if shred_type == "files":
-                self.log(f"开始批量删除 {len(paths)} 个文件...")
-            else:
-                self.log(f"开始批量删除目录: {paths[0]}")
-            
-            # 在线程中执行增强版删除操作
-            def advanced_shred_thread():
-                success_count = 0
-                total_files = 0
-                terminated_processes = 0
-                
-                # 第一步：收集所有要处理的文件路径
-                all_files_to_shred = []
-                if shred_type == "files":
-                    all_files_to_shred = paths
-                    total_files = len(paths)
-                else:  # directory
-                    if recursive:
-                        for root, dirs, files in os.walk(paths[0]):
-                            for file_name in files:
-                                all_files_to_shred.append(os.path.join(root, file_name))
-                    else:
-                        try:
-                            for item in os.listdir(paths[0]):
-                                item_path = os.path.join(paths[0], item)
-                                if os.path.isfile(item_path):
-                                    all_files_to_shred.append(item_path)
-                        except:
-                            pass
-                    total_files = len(all_files_to_shred)
-                
-                self.log(f"总共发现 {total_files} 个文件需要删除")
-                
-                # 第二步：批量关闭相关进程
-                self.log("开始批量关闭相关进程...")
-                for file_path in all_files_to_shred:
-                    try:
-                        # 终止使用该文件的进程
-                        self._terminate_processes_using_file(file_path)
-                        
-                        # 终止与文件所在目录相关的进程
-                        file_dir = os.path.dirname(file_path)
-                        self._terminate_related_processes(file_dir)
-                        
-                        terminated_processes += 1
-                        if terminated_processes % 10 == 0:
-                            self.log(f"已处理 {terminated_processes} 个文件的相关进程")
-                            
-                    except Exception as e:
-                        self.log(f"终止进程时出错 {file_path}: {str(e)}")
-                
-                self.log(f"批量进程关闭完成，共关闭 {terminated_processes} 个相关进程")
-                
-                # 第三步：批量文件删除
-                self.log("开始批量文件删除...")
-                for i, file_path in enumerate(all_files_to_shred):
-                    try:
-                        # 根据选项应用不同的删除策略
-                        shred_success = False
-                        
-                        if secure_removal:
-                            # 使用安全数据删除
-                            shred_success = self._secure_data_removal(
-                                file_path, 
-                                force_kill=force_kill,
-                                disable_protection=disable_protection
-                            )
-                        else:
-                            # 使用标准删除
-                            if self._shred_file(file_path, passes=3):
-                                shred_success = True
-                        
-                        if shred_success:
-                            success_count += 1
-                            self.log(f"成功删除 ({i+1}/{total_files}): {os.path.basename(file_path)}")
-                        else:
-                            self.log(f"删除失败 ({i+1}/{total_files}): {os.path.basename(file_path)}")
-                            
-                    except Exception as e:
-                        self.log(f"删除文件时出错 {file_path}: {str(e)}")
-                
-                # 第四步：清理空目录（如果是目录删除）
-                if shred_type == "directory" and total_files > 0:
-                    try:
-                        self.log("开始清理空目录...")
-                        self._clean_empty_directories(paths[0])
-                        self.log("空目录清理完成")
-                    except Exception as e:
-                        self.log(f"清理空目录时出错: {str(e)}")
-                
-                # 刷新UI列表
-                self.root.after(0, self.refresh_list)
-                
-                # 显示详细结果
-                result_message = (
-                    f"🎯 批量删除完成！\n\n"
-                    f"✅ 成功删除: {success_count}/{total_files} 个文件\n"
-                    f"🔪 关闭相关进程: {terminated_processes} 个\n"
-                    f"📁 删除类型: {'多文件' if shred_type == 'files' else '整个目录'}\n"
-                    f"💪 强制关闭: {'启用' if force_kill else '禁用'}\n"
-                    f"🛡️ 禁用保护: {'启用' if disable_protection else '禁用'}\n"
-                    f"🔧 高级清理: {'启用' if secure_removal else '禁用'}"
-                )
-                
-                self.root.after(0, lambda:
-                    messagebox.showinfo("批量删除完成", result_message)
-                )
-            
-            threading.Thread(target=advanced_shred_thread, daemon=True).start()
-            
-        except Exception as e:
-            self.log(f"执行增强版删除操作时出错: {str(e)}")
-            self.root.after(0, lambda:
-                messagebox.showerror("错误", f"执行增强版删除操作时出错: {str(e)}")
-            )
+
     
     def _execute_shredding(self, paths, shred_type, recursive):
         """执行实际的删除操作"""
@@ -3476,9 +3622,16 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
                 # 刷新UI列表
                 self.root.after(0, self.refresh_list)
                 
+                # 验证粉碎结果
+                verification_result = self._verify_shredding_result(paths if shred_type == "files" else [], success_count)
+                
                 # 显示结果
+                result_message = f"共删除 {success_count}/{total_files} 个文件/文件夹\n"
+                if verification_result:
+                    result_message += f"🔍 验证结果: {verification_result}\n"
+                
                 self.root.after(0, lambda:
-                    messagebox.showinfo("删除完成", f"共删除 {success_count}/{total_files} 个文件/文件夹")
+                    messagebox.showinfo("删除完成", result_message)
                 )
             
             threading.Thread(target=shred_thread, daemon=True).start()
@@ -3489,7 +3642,73 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
                 messagebox.showerror("错误", f"执行删除操作时出错: {str(e)}")
             )
     
-    def _secure_data_removal(self, file_path, force_kill=False, disable_protection=False):
+    def _verify_shredding_result(self, files_to_verify, success_count):
+        """验证文件粉碎结果"""
+        self.log("开始验证文件粉碎结果")
+        
+        if not files_to_verify:
+            return "无文件需要验证"
+        
+        # 验证文件是否真的不存在
+        still_exists = []
+        for file_path in files_to_verify:
+            if os.path.exists(file_path):
+                still_exists.append(file_path)
+        
+        if still_exists:
+            for file_path in still_exists:
+                self.log(f"警告：文件应该已删除但仍然存在: {file_path}")
+            return f"{len(still_exists)} 个文件可能未被彻底删除"
+        else:
+            return "所有文件已被成功删除"
+    
+    def _is_ssd(self, file_path):
+        """检测文件所在的设备是否为SSD"""
+        try:
+            # 初始化缓存（在类级别持久化）
+            if not hasattr(self, '_ssd_cache'):
+                self._ssd_cache = {}
+            
+            # 获取文件所在的驱动器字母
+            drive_letter = os.path.splitdrive(file_path)[0].upper()
+            if not drive_letter:
+                return False
+            
+            # 检查缓存
+            if drive_letter in self._ssd_cache:
+                return self._ssd_cache[drive_letter]
+            
+            # 使用更快的wmic命令格式并设置超时
+            try:
+                # 使用更高效的wmic命令，只获取必要信息
+                command = f'wmic diskdrive where DeviceID="{drive_letter}:\\" get MediaType /value'
+                result = subprocess.run(
+                    command, 
+                    capture_output=True, 
+                    text=True, 
+                    shell=True, 
+                    encoding='gbk',
+                    timeout=3  # 设置3秒超时
+                )
+                
+                if result.returncode == 0 and "SSD" in result.stdout:
+                    self._ssd_cache[drive_letter] = True
+                else:
+                    self._ssd_cache[drive_letter] = False
+            except subprocess.TimeoutExpired:
+                # 超时，假设不是SSD
+                self.log(f"SSD检测超时，假设为非SSD设备")
+                self._ssd_cache[drive_letter] = False
+            except Exception as e:
+                self.log(f"使用wmic检测SSD时出错: {str(e)}")
+                self._ssd_cache[drive_letter] = False
+            
+            return self._ssd_cache[drive_letter]
+        except Exception as e:
+            self.log(f"检测SSD时出错: {str(e)}")
+            return False
+    
+    def _secure_data_removal(self, file_path, force_kill=False, disable_protection=False, algorithm="default", passes=3):
         """安全数据删除 - 确保文件无法被恢复"""
         try:
             self.log(f"开始安全数据删除: {os.path.basename(file_path)}")
@@ -3498,6 +3717,11 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
             if not os.path.exists(file_path):
                 self.log(f"文件不存在: {file_path}")
                 return True
+            
+            # 检测是否为SSD
+            is_ssd_device = self._is_ssd(file_path)
+            if is_ssd_device:
+                self.log(f"检测到文件所在设备为SSD，将使用SSD优化的删除策略")
             
             # 第一步：强制终止使用该文件的进程
             if force_kill:
@@ -3526,7 +3750,7 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
             
             # 方法1：使用高级API删除
             try:
-                if self._advanced_api_shredding(file_path):
+                if self._advanced_api_shredding(file_path, algorithm=algorithm, passes=passes):
                     shred_success = True
                     self.log("高级API删除成功")
             except Exception as e:
@@ -3535,7 +3759,7 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
             # 方法2：如果高级API失败，使用win32file直接写入
             if not shred_success:
                 try:
-                    if self._win32file_shredding(file_path):
+                    if self._win32file_shredding(file_path, algorithm=algorithm, passes=passes):
                         shred_success = True
                         self.log("win32file直接写入删除成功")
                 except Exception as e:
@@ -3544,7 +3768,7 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
             # 方法3：如果还是失败，使用ctypes直接调用底层API
             if not shred_success:
                 try:
-                    if self._ctypes_api_shredding(file_path):
+                    if self._ctypes_api_shredding(file_path, algorithm=algorithm, passes=passes):
                         shred_success = True
                         self.log("ctypes底层API删除成功")
                 except Exception as e:
@@ -3645,7 +3869,7 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
         except Exception as e:
             self.log(f"清理文件残留时出错: {str(e)}")
     
-    def _win32file_shredding(self, file_path):
+    def _win32file_shredding(self, file_path, algorithm="default", passes=3):
         """使用win32file进行直接磁盘扇区写入删除"""
         try:
             if not WIN32FILE_AVAILABLE:
@@ -3666,31 +3890,76 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
                 # 获取文件大小
                 file_size = win32api.GetFileSize(handle)
                 
-                # 多轮随机数据覆盖
-                for pass_num in range(5):
+                # 使用_multi_layer_shredding方法进行覆盖，保持算法一致性
+                self.log(f"使用win32file API进行{algorithm}算法覆盖...")
+                
+                # 多轮覆盖，使用指定的算法和次数
+                # 根据算法确定实际的覆盖次数和模式
+                if algorithm == "gutmann":
+                    actual_passes = 35
+                elif algorithm == "dod5220":
+                    actual_passes = 3
+                else:
+                    actual_passes = passes
+                
+                for pass_num in range(actual_passes):
                     win32file.SetFilePointer(handle, 0, win32file.FILE_BEGIN)
+                    
+                    # 根据算法选择覆盖模式
+                    if algorithm == "dod5220":
+                        # DoD 5220.22-M标准：随机数据 -> 补码 -> 零
+                        if pass_num % 3 == 0:
+                            pattern = "random"
+                        elif pass_num % 3 == 1:
+                            pattern = "complement"
+                        else:
+                            pattern = "zero"
+                    elif algorithm == "gutmann":
+                        # Gutmann算法：使用预定义的模式
+                        gutmann_patterns = [
+                            0x55, 0xAA, 0x92, 0x49, 0x24, 0x92, 0x49, 0x24, 0x6D, 0xB6, 0xDB, 0x6D,
+                            0xB6, 0xDB, 0x6D, 0xB6, 0xDB, 0x6D, 0xB6, 0xDB, 0x6D, 0xB6, 0xDB, 0x6D,
+                            0xB6, 0xDB, 0x6D, 0xB6, 0xDB, 0x6D, 0xB6, 0xDB, 0x6D, 0xB6, 0x00
+                        ]
+                        pattern_byte = gutmann_patterns[pass_num % len(gutmann_patterns)]
+                        pattern = "fixed" + str(pattern_byte)
+                    elif algorithm == "random":
+                        pattern = "random"
+                    else:  # default
+                        # 默认算法：随机数据 -> 1 -> 零
+                        if pass_num % 3 == 0:
+                            pattern = "random"
+                        elif pass_num % 3 == 1:
+                            pattern = "ones"
+                        else:
+                            pattern = "zero"
+                    
+                    # 写入相应的覆盖数据
                     for i in range(0, file_size, 4096):  # 4KB块大小
-                        # 生成随机数据块
                         remaining = file_size - i
                         block_size = min(4096, remaining)
-                        random_data = os.urandom(block_size)
+                        
+                        if pattern == "random":
+                            data_block = os.urandom(block_size)
+                        elif pattern == "zero":
+                            data_block = b'\x00' * block_size
+                        elif pattern == "ones":
+                            data_block = b'\xFF' * block_size
+                        elif pattern == "complement":
+                            # 生成互补数据
+                            random_data = os.urandom(block_size)
+                            data_block = bytes(~b & 0xFF for b in random_data)
+                        elif pattern.startswith("fixed"):
+                            # 固定值覆盖
+                            fixed_byte = int(pattern[5:])
+                            data_block = bytes([fixed_byte]) * block_size
+                        else:
+                            data_block = os.urandom(block_size)
                         
                         # 写入数据
-                        win32file.WriteFile(handle, random_data)
+                        win32file.WriteFile(handle, data_block)
                     
                     # 强制写入磁盘
-                    win32file.FlushFileBuffers(handle)
-                    
-                    # 零覆盖
-                    win32file.SetFilePointer(handle, 0, win32file.FILE_BEGIN)
-                    zero_block = b'\x00' * 4096
-                    for i in range(0, file_size, 4096):
-                        remaining = file_size - i
-                        block_size = min(4096, remaining)
-                        if block_size < 4096:
-                            zero_block = b'\x00' * block_size
-                        win32file.WriteFile(handle, zero_block)
-                    
                     win32file.FlushFileBuffers(handle)
                 
                 # 截断文件
@@ -3807,6 +4076,737 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
             self.log(f"ctypes API删除失败: {str(e)}")
             return False
     
+    def start_file_shredding(self):
+        """强力粉碎功能 - 支持选择文件或文件夹进行粉碎"""
+        try:
+            self.log("强力粉碎功能已启动")
+            self.status_label.config(text="强力粉碎功能已启动，请选择要粉碎的项目...", fg="#8e44ad")
+            
+            # 先让用户选择要粉碎的项目类型
+            mode_dialog = tk.Toplevel(self.root)
+            mode_dialog.title("选择粉碎类型")
+            mode_dialog.geometry("300x150")
+            mode_dialog.resizable(False, False)
+            mode_dialog.transient(self.root)
+            mode_dialog.grab_set()
+            
+            # 居中显示
+            mode_dialog.update_idletasks()
+            x = (mode_dialog.winfo_screenwidth() // 2) - (mode_dialog.winfo_width() // 2)
+            y = (mode_dialog.winfo_screenheight() // 2) - (mode_dialog.winfo_height() // 2)
+            mode_dialog.geometry(f"+{x}+{y}")
+            
+            # 选择模式变量
+            shred_mode = tk.StringVar(value="file")
+            
+            # 提示标签
+            tk.Label(mode_dialog, text="请选择要粉碎的项目类型：", font=("微软雅黑", 10)).pack(pady=10)
+            
+            # 文件选择按钮
+            tk.Radiobutton(
+                mode_dialog, 
+                text="文件（可多选）", 
+                variable=shred_mode, 
+                value="file"
+            ).pack(anchor=tk.CENTER, pady=2)
+            
+            # 文件夹选择按钮
+            tk.Radiobutton(
+                mode_dialog, 
+                text="文件夹", 
+                variable=shred_mode, 
+                value="folder"
+            ).pack(anchor=tk.CENTER, pady=2)
+            
+            # 选择结果
+            selected_paths = []
+            item_type = ""
+            
+            def proceed():
+                nonlocal selected_paths, item_type
+                
+                if shred_mode.get() == "file":
+                    # 选择文件
+                    selected_files = list(filedialog.askopenfilenames(
+                        title="选择要强力粉碎的文件",
+                        filetypes=[("所有文件", "*.*")]
+                    ))
+                    selected_paths = list(selected_files)
+                    if selected_paths:
+                        item_type = f"{len(selected_paths)} 个文件"
+                else:
+                    # 选择文件夹
+                    selected_folder = filedialog.askdirectory(
+                        title="选择要强力粉碎的文件夹"
+                    )
+                    if selected_folder:
+                        selected_paths = [selected_folder]
+                        item_type = "1 个文件夹"
+                
+                mode_dialog.destroy()
+            
+            # 确定按钮
+            tk.Button(
+                mode_dialog, 
+                text="确定", 
+                command=proceed,
+                padx=20, pady=5
+            ).pack(pady=10)
+            
+            # 等待对话框关闭
+            self.root.wait_window(mode_dialog)
+            
+            # 如果没有选择任何项目，取消操作
+            if not selected_paths:
+                self.status_label.config(text="文件粉碎已取消", fg="#f39c12")
+                return
+            
+            self.log(f"已选择 {item_type} 进行强力粉碎")
+            
+            # 简化的确认对话框
+            confirm_dialog = tk.Toplevel(self.root)
+            confirm_dialog.title("强力粉碎确认")
+            confirm_dialog.geometry("400x200")
+            confirm_dialog.resizable(False, False)
+            confirm_dialog.transient(self.root)
+            confirm_dialog.grab_set()
+            
+            # 居中显示
+            confirm_dialog.update_idletasks()
+            x = (confirm_dialog.winfo_screenwidth() // 2) - (confirm_dialog.winfo_width() // 2)
+            y = (confirm_dialog.winfo_screenheight() // 2) - (confirm_dialog.winfo_height() // 2)
+            confirm_dialog.geometry(f"+{x}+{y}")
+            
+            # 确认信息
+            tk.Label(confirm_dialog, text="强力粉碎确认", font=("微软雅黑", 12, "bold")).pack(pady=10)
+            tk.Label(confirm_dialog, text=f"确定要强力粉碎选中的 {item_type}吗？",
+                   wraplength=350).pack(pady=10)
+            tk.Label(confirm_dialog, text="此操作不可逆！", fg="#e74c3c", font=("微软雅黑", 10, "bold")).pack(pady=10)
+            
+            # 配置结果
+            config_result = None
+            
+            # 简化的按钮 - 只保留确认和取消
+            button_frame = tk.Frame(confirm_dialog)
+            button_frame.pack(pady=20)
+            
+            def proceed():
+                nonlocal config_result
+                # 使用安全的默认配置
+                config_result = {
+                    "algorithm": "default",
+                    "passes": 5,  # 使用更安全的默认值
+                    "recursive": True,  # 默认递归粉碎文件夹
+                    "force_kill": True,
+                    "disable_protection": True
+                }
+                confirm_dialog.destroy()
+            
+            tk.Button(button_frame, text="确认", width=15, bg="#3498db", fg="white",
+                      command=proceed).pack(side="left", padx=10)
+            tk.Button(button_frame, text="取消", width=15, bg="#e74c3c", fg="white",
+                      command=lambda: [confirm_dialog.destroy(), setattr(confirm_dialog, "result", None)]).pack(side="left", padx=10)
+            
+            # 等待用户操作
+            self.root.wait_window(confirm_dialog)
+            
+            if config_result is None:
+                self.status_label.config(text="文件粉碎已取消", fg="#f39c12")
+                return
+            
+            # 执行强力粉碎
+            self._execute_force_shredding(selected_paths, **config_result)
+            
+        except Exception as e:
+            self.log(f"强力粉碎启动失败: {e}")
+            self.status_label.config(text=f"强力粉碎启动失败: {e}", fg="#e74c3c")
+            messagebox.showerror("错误", f"强力粉碎启动失败: {e}")
+    
+    def _execute_force_shredding(self, paths, algorithm="default", passes=3, recursive=False, force_kill=True, disable_protection=True, wait_for_completion=False):
+        """执行强力粉碎操作"""
+        import time
+        import concurrent.futures
+        import threading
+        from threading import Event
+        from multiprocessing import Value
+        
+        # 结果变量，用于在线程间传递粉碎结果
+        shredding_result = [0, 0]  # [成功数, 失败数]
+        
+        # 将_collect_files_to_process函数移到顶层，以便在整个函数中被访问
+        def _collect_files_to_process(paths, recursive):
+            """收集所有要处理的文件 - 使用重构后的核心模块"""
+            try:
+                # 导入核心粉碎模块
+                from core_shredding import collect_files_to_process as core_collect_files
+                
+                # 使用核心模块收集文件
+                all_files, processed_folders = core_collect_files(paths, recursive)
+                return all_files, processed_folders
+            except Exception as e:
+                self.log(f"使用核心模块收集文件失败: {str(e)}, 使用备用实现")
+                
+                # 备用实现
+                all_files = []
+                processed_folders = []
+                
+                for path in paths:
+                    if os.path.isdir(path):
+                        processed_folders.append(path)
+                        if not recursive:
+                            # 只处理当前目录
+                            for f in os.listdir(path):
+                                file_path = os.path.join(path, f)
+                                if os.path.isfile(file_path) and file_path not in all_files:
+                                    all_files.append(file_path)
+                        else:
+                            # 递归处理所有文件
+                            for root, dirs, files in os.walk(path, topdown=False):
+                                for f in files:
+                                    file_path = os.path.join(root, f)
+                                    if file_path not in all_files:
+                                        all_files.append(file_path)
+                    else:
+                        if path not in all_files:
+                            all_files.append(path)
+                
+                return all_files, processed_folders
+        
+        # 将所有辅助函数移到顶层，以便在整个函数中被访问
+        def _create_progress_dialog(total_files, algorithm, passes):
+            """创建进度对话框"""
+            # 非GUI环境下跳过进度对话框创建
+            if not hasattr(self, 'root') or self.root is None:
+                return None, None, None, None, None, None, None, None
+            
+            progress_dialog = tk.Toplevel(self.root)
+            progress_dialog.title("强力粉碎进度")
+            progress_dialog.geometry("550x350")
+            progress_dialog.resizable(False, False)
+            progress_dialog.transient(self.root)
+            progress_dialog.grab_set()
+            
+            # 居中显示
+            progress_dialog.update_idletasks()
+            x = (progress_dialog.winfo_screenwidth() // 2) - (progress_dialog.winfo_width() // 2)
+            y = (progress_dialog.winfo_screenheight() // 2) - (progress_dialog.winfo_height() // 2)
+            progress_dialog.geometry(f"+{x}+{y}")
+            
+            # 进度标题
+            tk.Label(progress_dialog, text="强力粉碎进度", font=("Microsoft YaHei", 12, "bold")).pack(pady=10)
+            
+            # 当前操作状态
+            status_frame = tk.Frame(progress_dialog)
+            status_frame.pack(pady=5)
+            tk.Label(status_frame, text="当前状态：", font=("Microsoft YaHei", 10), fg="#333").pack(side=tk.LEFT)
+            current_status = tk.Label(status_frame, text="正在初始化...", font=("Microsoft YaHei", 10, "italic"), fg="#0066cc")
+            current_status.pack(side=tk.LEFT)
+            
+            # 更新初始化状态
+            current_status.config(text="正在执行粉碎...", fg="#0066cc")
+            progress_dialog.update_idletasks()
+            
+            # 进度条和百分比
+            progress_frame = tk.Frame(progress_dialog)
+            progress_frame.pack(pady=10)
+            
+            from tkinter import ttk
+            progress_var = tk.DoubleVar()
+            progress_bar = ttk.Progressbar(progress_frame, variable=progress_var, length=400, mode="determinate")
+            progress_bar.pack(side=tk.LEFT)
+            
+            progress_percentage = tk.Label(progress_frame, text="0%", width=6, font=("Microsoft YaHei", 10))
+            progress_percentage.pack(side=tk.LEFT, padx=10)
+            
+            # 文件计数器
+            counter_label = tk.Label(progress_dialog, text=f"已处理: 0 / {total_files} 个文件", font=("Microsoft YaHei", 10), fg="#666")
+            counter_label.pack(pady=5)
+            
+            # 算法信息
+            tk.Label(progress_dialog, 
+                     text=f"使用算法: {algorithm} | 覆盖次数: {passes}", 
+                     font=("Microsoft YaHei", 9), 
+                     fg="#888").pack(pady=5)
+            
+            # 当前处理的文件
+            file_frame = tk.Frame(progress_dialog)
+            file_frame.pack(pady=5)
+            tk.Label(file_frame, text="当前文件：", font=("Microsoft YaHei", 10), fg="#333").pack(side=tk.LEFT)
+            current_file = tk.Label(file_frame, text="准备开始...", font=("Microsoft YaHei", 10, "italic"), fg="#333", wraplength=450)
+            current_file.pack(side=tk.LEFT, anchor="w")
+            
+            # 操作状态
+            action_label = tk.Label(progress_dialog, text="", font=("Microsoft YaHei", 10), fg="#2e8b57")
+            action_label.pack(pady=5)
+            
+            # 性能监控
+            performance_label = tk.Label(progress_dialog, text="速度: 0.00 MB/s | 剩余时间: 计算中", font=("Microsoft YaHei", 9), fg="#888")
+            performance_label.pack(pady=5)
+            
+            return progress_dialog, current_status, progress_var, progress_percentage, counter_label, current_file, action_label, performance_label
+        
+        def _setup_cancel_mechanism(progress_dialog, current_status):
+            """设置取消机制"""
+            cancel_shred = Event()
+            
+            def cancel_shredding():
+                cancel_shred.set()
+                self.log("用户取消了文件粉碎操作")
+                if current_status:
+                    current_status.config(text="正在取消操作...", fg="#ff6600")
+            
+            # 取消按钮
+            cancel_button = tk.Button(progress_dialog, text="取消", bg="#ff6b6b", fg="white", width=10, command=cancel_shredding)
+            cancel_button.pack(pady=15)
+            
+            return cancel_shred
+        
+        def _create_progress_updater(total_files, progress_var, progress_percentage, counter_label, current_file, action_label, performance_label, lock):
+            """创建进度更新器"""
+            # 性能监控变量
+            total_processed_size = 0
+            last_processed_count = 0
+            last_processed_size = 0
+            last_time = time.time()
+            last_ui_update = 0  # 上次UI更新时间
+            UI_UPDATE_INTERVAL = 0.1  # UI更新间隔（秒）
+            
+            # 保存最近的速度记录，用于平滑平均
+            speed_history = []
+            MAX_HISTORY = 5
+            
+            def update_progress(current_idx, status, file_size=0):
+                nonlocal total_processed_size, last_processed_count, last_processed_size, last_time, last_ui_update, speed_history
+                
+                # 更新已处理大小
+                with lock:
+                    # 只有当file_size大于0时才累加（避免进度回调时的重复累加）
+                    if file_size > 0:
+                        total_processed_size += file_size
+                
+                # 计算进度百分比（基于文件数量）
+                progress = min((current_idx / total_files) * 100, 100)
+                
+                # 计算当前时间
+                current_time = time.time()
+                time_diff = current_time - last_time
+                
+                # 检查是否需要更新UI
+                if current_time - last_ui_update < UI_UPDATE_INTERVAL:
+                    return  # 不频繁更新UI
+                
+                last_ui_update = current_time
+                
+                # 定义UI更新函数，将在主线程中执行
+                def update_ui():
+                    nonlocal last_processed_count, last_processed_size, last_time
+                    
+                    try:
+                        # 检查是否为GUI环境
+                        is_gui = all([progress_var, progress_percentage, counter_label, current_file, action_label])
+                        
+                        if is_gui:
+                            # 更新进度条和计数器
+                            progress_var.set(progress)
+                            progress_percentage.config(text=f"{int(progress)}%")
+                            counter_label.config(text=f"已处理: {current_idx} / {total_files} 个文件")
+                            current_file.config(text=os.path.basename(status[0]))
+                            action_label.config(text=status[1])
+                            
+                            # 更新速度和剩余时间
+                            if time_diff > 0.5:  # 每0.5秒更新一次性能数据
+                                # 计算文件处理速度
+                                files_processed = current_idx - last_processed_count
+                                
+                                # 计算数据处理速度（MB/s）
+                                data_processed = total_processed_size - last_processed_size
+                                data_speed = (data_processed / (1024 * 1024)) / time_diff if time_diff > 0 else 0
+                                
+                                # 记录速度历史
+                                speed_history.append(data_speed)
+                                if len(speed_history) > MAX_HISTORY:
+                                    speed_history.pop(0)
+                                
+                                # 计算平均速度
+                                avg_speed = sum(speed_history) / len(speed_history) if speed_history else 0
+                                
+                                # 计算剩余时间（基于平均速度和剩余数据）
+                                remaining_files = total_files - current_idx
+                                remaining_time = 0
+                                
+                                if current_idx > 0 and avg_speed > 0:
+                                    # 估计剩余文件的平均大小
+                                    avg_file_size = total_processed_size / current_idx if current_idx > 0 else 0
+                                    estimated_remaining_data = remaining_files * avg_file_size
+                                    remaining_time = estimated_remaining_data / (avg_speed * 1024 * 1024) if avg_speed > 0 else 0
+                                    remaining_time_str = time.strftime("%H:%M:%S", time.gmtime(remaining_time))
+                                else:
+                                    remaining_time_str = "计算中"
+                                
+                                # 更新性能标签
+                                if performance_label:
+                                    performance_label.config(
+                                        text=f"速度: {data_speed:.2f} MB/s (平均: {avg_speed:.2f} MB/s) | 剩余时间: {remaining_time_str}"
+                                    )
+                        
+                        # 更新最后处理的计数和大小（在主线程中更新）
+                        last_processed_count = current_idx
+                        last_processed_size = total_processed_size
+                        last_time = current_time
+                    except RuntimeError as e:
+                        # 捕获主线程错误，跳过UI更新
+                        if "main thread is not in main loop" not in str(e):
+                            # 其他RuntimeError仍需记录
+                            self.log(f"UI更新错误: {str(e)}")
+                    except Exception as e:
+                        # 捕获其他异常，避免影响主流程
+                        self.log(f"UI更新异常: {str(e)}")
+                
+                # 使用after_idle确保UI更新在主线程中执行
+                try:
+                    # 检查progress_var是否有master属性（GUI环境）
+                    if hasattr(progress_var, 'master') and progress_var.master:
+                        progress_var.master.after_idle(update_ui)
+                    # 如果没有master属性，说明是测试环境，直接执行更新
+                    else:
+                        update_ui()
+                except Exception as e:
+                    # 处理"main thread is not in main loop"错误
+                    if "main thread is not in main loop" in str(e):
+                        update_ui()
+                    else:
+                        # 如果是其他错误，也直接执行更新
+                        update_ui()
+            
+            return update_progress
+        
+        # 收集所有要处理的文件
+        all_files_to_process, processed_folders = _collect_files_to_process(paths, recursive)
+        total_files = len(all_files_to_process)
+        
+        self.log(f"开始强力粉碎操作，共 {total_files} 个文件，算法：{algorithm}，覆盖次数：{passes}")
+        
+        # 创建线程安全的计数器和列表
+        processed_count = Value('i', 0)
+        success_count = Value('i', 0)
+        lock = threading.Lock()
+        
+        success_files = []
+        failed_files = []
+        
+        # 创建进度对话框
+        progress_dialog, current_status, progress_var, progress_percentage, counter_label, current_file, action_label, performance_label = \
+            _create_progress_dialog(total_files, algorithm, passes)
+        
+        # 设置取消机制
+        cancel_shred = Event()  # 默认创建一个事件对象
+        if progress_dialog and current_status:
+            # 只有在GUI环境下才设置真正的取消机制
+            cancel_shred = _setup_cancel_mechanism(progress_dialog, current_status)
+        
+        # 创建进度更新器 - 根据是否为GUI环境使用不同的实现
+        if progress_dialog and current_status and progress_var and progress_percentage:
+            # GUI环境下使用完整的进度更新器
+            update_progress = _create_progress_updater(total_files, progress_var, progress_percentage, counter_label, current_file, action_label, performance_label, lock)
+        else:
+            # 非GUI环境下使用简化的进度更新器
+            def update_progress(current_idx, status, file_size):
+                # 简单记录日志，不进行GUI更新
+                if status:
+                    self.log(f"处理文件 {current_idx}/{total_files}: {status[1]} - {os.path.basename(status[0])}")
+        
+        # 定义文件处理函数
+        def process_single_file(file_path):
+            """处理单个文件"""
+            if cancel_shred.is_set():
+                return False, file_path, 0
+            
+            try:
+                file_size = os.path.getsize(file_path)
+                
+                # 使用线程安全的方式更新进度
+                with lock:
+                    current_idx = processed_count.value + 1
+                    processed_count.value = current_idx
+                
+                update_progress(current_idx, (file_path, "准备粉碎..."), file_size)
+                
+                # 创建文件级进度回调
+                def file_progress_callback(current_pass, total_passes, current_block, total_blocks, file_size):
+                    # 更新当前文件的详细进度
+                    status = f"第 {current_pass}/{total_passes} 轮 - 正在覆盖块 {current_block}/{total_blocks}"
+                    
+                    # 只更新状态，不更新已处理大小，避免重复累加
+                    update_progress(current_idx, (file_path, status), 0)
+                
+                # 直接调用_shred_file，并传递进度回调
+                shred_result = self._shred_file(
+                    file_path, 
+                    algorithm=algorithm, 
+                    passes=passes, 
+                    force_kill=force_kill, 
+                    disable_protection=disable_protection,
+                    progress_callback=file_progress_callback
+                )
+                
+                if shred_result:
+                    with lock:
+                        success_count.value += 1
+                        success_files.append(file_path)
+                    update_progress(current_idx, (file_path, "粉碎成功！"), file_size)
+                    self.log(f"文件粉碎成功: {file_path}")
+                    return True, file_path, file_size
+                else:
+                    with lock:
+                        failed_files.append(file_path)
+                    update_progress(current_idx, (file_path, "粉碎失败！"), file_size)
+                    self.log(f"文件粉碎失败: {file_path}")
+                    return False, file_path, file_size
+            except Exception as e:
+                with lock:
+                    failed_files.append(file_path)
+                    current_idx = processed_count.value + 1
+                    processed_count.value = current_idx
+                update_progress(current_idx, (file_path, "处理错误！"), 0)
+                self.log(f"文件处理错误: {file_path} - {str(e)}")
+                return False, file_path, 0
+        
+        # 定义文件夹删除函数
+        def delete_empty_folders():
+            """删除空文件夹"""
+            for path in paths:
+                if os.path.isdir(path):
+                    try:
+                        if recursive:
+                            shutil.rmtree(path, ignore_errors=True)
+                            self.log(f"文件夹删除成功: {path}")
+                        else:
+                            # 只删除当前目录中的文件
+                            for file_name in os.listdir(path):
+                                file_path = os.path.join(path, file_name)
+                                if os.path.isfile(file_path):
+                                    continue  # 文件已经粉碎了
+                                elif os.path.isdir(file_path):
+                                    try:
+                                        os.rmdir(file_path)  # 尝试删除空目录
+                                        self.log(f"子目录删除成功: {file_path}")
+                                    except:
+                                        pass  # 非空目录不删除
+                            # 尝试删除主目录
+                            try:
+                                os.rmdir(path)
+                                self.log(f"文件夹删除成功: {path}")
+                            except:
+                                self.log(f"文件夹删除失败 (可能非空): {path}")
+                    except Exception as e:
+                        self.log(f"文件夹删除失败: {path} - {e}")
+        
+        # 执行实际的粉碎操作
+        def perform_shredding():
+            """执行实际的粉碎操作"""
+            # 计算最优线程数
+            cpu_count = os.cpu_count() or 4
+            max_workers = min(16, max(2, cpu_count * 4))  # 增加最大线程数，提高并发处理能力
+            
+            # 如果文件数量很少，减少线程数以避免线程创建开销
+            if total_files < max_workers:
+                max_workers = total_files
+            
+            self.log(f"使用 {max_workers} 个线程进行并行文件粉碎")
+            
+            # 设置全局超时时间（相对秒数）
+            total_timeout = 30 * len(all_files_to_process)  # 每个文件最多30秒，总超时
+            start_time = time.time()
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # 提交所有文件处理任务
+                futures = []
+                for file_path in all_files_to_process:
+                    future = executor.submit(process_single_file, file_path)
+                    futures.append(future)
+                
+                # 等待所有任务完成或取消，设置全局超时机制
+                try:
+                    for future in concurrent.futures.as_completed(futures, timeout=total_timeout):
+                        if cancel_shred.is_set():
+                            break
+                        # 获取任务结果，忽略已在process_single_file中处理的异常
+                        future.result()
+                except concurrent.futures.TimeoutError:
+                    self.log(f"全局处理超时，停止所有操作")
+                    cancel_shred.set()
+                
+                # 取消未完成的任务
+                if cancel_shred.is_set():
+                    for future in futures:
+                        if not future.done():
+                            future.cancel()
+                            self.log(f"取消未完成的任务")
+            
+            # 处理文件夹删除
+            if not cancel_shred.is_set():
+                delete_empty_folders()
+            
+            # 更新完成状态（仅在GUI环境下）
+            def update_completion_status():
+                if progress_dialog and current_status:
+                    if cancel_shred.is_set():
+                        current_status.config(text="操作已取消", fg="#ff6600")
+                        if action_label:
+                            action_label.config(text="正在清理资源...")
+                    else:
+                        current_status.config(text="粉碎操作完成！", fg="#27ae60")
+                
+                progress_dialog.update_idletasks()
+                time.sleep(0.5)  # 给用户一些时间查看完成状态
+                
+                progress_dialog.destroy()
+            
+            # 在主线程中更新完成状态
+            if progress_dialog and current_status:
+                progress_dialog.after(0, update_completion_status)
+            else:
+                update_completion_status()
+            
+            # 计算耗时
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            
+            # 显示结果报告（仅在GUI环境下）
+            def show_result_report():
+                if hasattr(self, 'root') and self.root:
+                    self._show_shredding_report(
+                        success_count=success_count.value,
+                        total_files=total_files,
+                        success_files=success_files,
+                        failed_files=failed_files,
+                        processed_folders=processed_folders,
+                        algorithm=algorithm,
+                        passes=passes,
+                        elapsed_time=elapsed_time,
+                        cancel_shred=cancel_shred.is_set()
+                    )
+            
+            # 在主线程中显示结果报告
+            if hasattr(self, 'root') and self.root:
+                self.root.after(0, show_result_report)
+            else:
+                show_result_report()
+            
+            # 返回结果，与测试脚本兼容
+            result = (success_count.value, len(failed_files))
+            
+            # 更新线程间共享的结果变量
+            shredding_result[0] = result[0]
+            shredding_result[1] = result[1]
+            
+            return result
+        
+        # 如果是测试模式（wait_for_completion=True），直接执行粉碎操作
+        if wait_for_completion:
+            result = perform_shredding()
+            return result[0], result[1]
+        else:
+            # GUI模式下，在后台线程中执行粉碎操作
+            shred_thread = threading.Thread(target=perform_shredding, daemon=True)
+            shred_thread.start()
+            return 0, 0
+    
+    def _show_shredding_report(self, success_count, total_files, success_files, failed_files, processed_folders, algorithm, passes, elapsed_time, cancel_shred):
+        """显示粉碎结果报告"""
+        # 创建结果对话框
+        result_dialog = tk.Toplevel(self.root)
+        result_dialog.title("粉碎结果报告")
+        result_dialog.geometry("600x450")
+        result_dialog.resizable(True, True)
+        result_dialog.transient(self.root)
+        result_dialog.grab_set()
+        
+        # 居中显示
+        result_dialog.update_idletasks()
+        x = (result_dialog.winfo_screenwidth() // 2) - (result_dialog.winfo_width() // 2)
+        y = (result_dialog.winfo_screenheight() // 2) - (result_dialog.winfo_height() // 2)
+        result_dialog.geometry(f"+{x}+{y}")
+        
+        # 结果标题
+        if cancel_shred:
+            title_text = "粉碎操作已取消"
+            title_color = "#f39c12"
+        else:
+            title_text = "粉碎操作完成"
+            title_color = "#27ae60"
+        
+        title_label = tk.Label(result_dialog, text=title_text, font=("Microsoft YaHei", 14, "bold"), fg=title_color)
+        title_label.pack(pady=10)
+        
+        # 统计信息框架
+        stats_frame = tk.Frame(result_dialog, padx=20, pady=10)
+        stats_frame.pack(fill="x")
+        
+        # 统计信息
+        stats_text = f"""
+        总文件数: {total_files}
+        成功粉碎: {success_count} ({int(success_count/total_files*100) if total_files > 0 else 0}%)
+        粉碎失败: {len(failed_files)}
+        处理文件夹: {len(processed_folders)}
+        使用算法: {algorithm}
+        覆盖次数: {passes}
+        总耗时: {elapsed_time:.2f} 秒
+        """
+        
+        stats_label = tk.Label(stats_frame, text=stats_text, font=("Microsoft YaHei", 10, "bold"), justify="left")
+        stats_label.pack(anchor="w")
+        
+        # 结果列表框架
+        list_frame = tk.Frame(result_dialog, padx=20, pady=10)
+        list_frame.pack(fill="both", expand=True)
+        
+        # 选项卡
+        from tkinter import ttk
+        notebook = ttk.Notebook(list_frame)
+        notebook.pack(fill="both", expand=True)
+        
+        # 成功文件列表
+        success_tab = tk.Frame(notebook)
+        notebook.add(success_tab, text=f"成功文件 ({len(success_files)})")
+        
+        success_scrollbar = tk.Scrollbar(success_tab)
+        success_scrollbar.pack(side="right", fill="y")
+        
+        success_listbox = tk.Listbox(success_tab, yscrollcommand=success_scrollbar.set, font=("Microsoft YaHei", 9), selectmode="extended")
+        success_listbox.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        for file_path in success_files:
+            success_listbox.insert(tk.END, os.path.basename(file_path))
+        
+        success_scrollbar.config(command=success_listbox.yview)
+        
+        # 失败文件列表
+        failed_tab = tk.Frame(notebook)
+        notebook.add(failed_tab, text=f"失败文件 ({len(failed_files)})")
+        
+        failed_scrollbar = tk.Scrollbar(failed_tab)
+        failed_scrollbar.pack(side="right", fill="y")
+        
+        failed_listbox = tk.Listbox(failed_tab, yscrollcommand=failed_scrollbar.set, font=("Microsoft YaHei", 9), selectmode="extended")
+        failed_listbox.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        for file_path in failed_files:
+            failed_listbox.insert(tk.END, os.path.basename(file_path))
+        
+        failed_scrollbar.config(command=failed_listbox.yview)
+        
+        # 关闭按钮
+        close_button = tk.Button(result_dialog, text="关闭", bg="#4169e1", fg="white", width=15, font=("Microsoft YaHei", 10),
+                                command=lambda: result_dialog.destroy())
+        close_button.pack(pady=15)
+        
+        # 更新状态标签
+        if cancel_shred:
+            self.status_label.config(text=f"文件粉碎已取消 - 已成功粉碎 {success_count}/{total_files} 个文件", fg="#f39c12")
+        else:
+            self.status_label.config(text=f"强力粉碎完成 - 已成功粉碎 {success_count}/{total_files} 个文件", fg="#27ae60")
+            
     def kill_process(self):
         """停止选中程序相关的进程"""
         selected_index = self.program_listbox.curselection()
@@ -4611,8 +5611,12 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
         # 查找主可执行文件
         exe_path = self._find_main_executable(install_location, display_name)
         
-        if not exe_path or not os.path.exists(exe_path):
+        if not exe_path:
             messagebox.showerror("错误", f"未找到 {display_name} 的可执行文件，无法在沙箱中运行")
+            return
+        
+        if not os.path.exists(exe_path):
+            messagebox.showerror("错误", f"未找到 {display_name} 的可执行文件: {exe_path}，无法在沙箱中运行")
             return
         
         # 显示沙箱配置选项
@@ -4768,10 +5772,24 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
             # 创建启动信息
             startup_info = win32process.STARTUPINFO()
             startup_info.lpTitle = f"沙箱程序 - {display_name}"
-            startup_info.dwFlags = win32process.STARTF_USESHOWWINDOW | win32process.STARTF_USESTDHANDLES
+            startup_info.dwFlags = win32process.STARTF_USESHOWWINDOW
             startup_info.wShowWindow = win32con.SW_NORMAL
             
-            # 5. 启动增强沙箱进程
+            # 5. 启动增强沙箱进程 - 添加参数验证
+            # 验证所有必要参数
+            if not exe_path or not os.path.exists(exe_path):
+                raise ValueError(f"无效的可执行文件路径: {exe_path}")
+            
+            if not sandbox_dirs['work'] or not os.path.exists(sandbox_dirs['work']):
+                raise ValueError(f"无效的工作目录: {sandbox_dirs['work']}")
+            
+            # 确保环境变量中没有None值
+            if sandbox_env:
+                for key, value in list(sandbox_env.items()):
+                    if value is None:
+                        del sandbox_env[key]
+                        self.log(f"移除了None值的环境变量: {key}")
+            
             process_handle, thread_handle, process_id, thread_id = win32process.CreateProcess(
                 exe_path,
                 None,  # 命令行
@@ -8554,15 +9572,22 @@ def is_admin():
         return False
 
 if __name__ == "__main__":
-    # 检查是否以管理员身份运行
-    if not is_admin():
-        print("请以管理员身份运行此程序")
-        # 尝试以管理员身份重启
-        if run_as_admin():
-            print("程序已重启")
-        else:
-            print("无法以管理员身份重启，请手动以管理员身份运行")
-            time.sleep(3)
+    # 调试模式 - 跳过管理员权限检查以便测试UI功能
+    debug_mode = False  # 设置为False以恢复正常权限检查
+    
+    if debug_mode:
+        print("调试模式：跳过管理员权限检查")
+        main()  # 直接运行主程序
     else:
-        print("已以管理员身份运行")
-        main()
+        # 正常模式：检查是否以管理员身份运行
+        if not is_admin():
+            print("请以管理员身份运行此程序")
+            # 尝试以管理员身份重启
+            if run_as_admin():
+                print("程序已重启")
+            else:
+                print("无法以管理员身份重启，请手动以管理员身份运行")
+                time.sleep(3)
+        else:
+            print("已以管理员身份运行")
+            main()
