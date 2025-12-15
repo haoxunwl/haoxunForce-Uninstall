@@ -5917,42 +5917,75 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
             
             self.log(f"创建增强沙箱工作目录: {sandbox_dir}")
             
-            # 1. 增强的进程限制设置
-            job = win32job.CreateJobObject(None, None)
+            # 1. 首先创建基本的作业对象
+            job = win32job.CreateJobObject(None, "")
             
             # 获取扩展限制信息
             job_info = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
             
-            # 设置超严格的进程限制 - 防逃逸增强版
-            job_info['BasicLimitInformation']['LimitFlags'] = (
-                win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE |    # 关闭Job时终止所有进程
-                win32job.JOB_OBJECT_LIMIT_PROCESS_MEMORY |       # 限制进程内存
-                win32job.JOB_OBJECT_LIMIT_WORKING_SET |          # 限制工作集
-                win32job.JOB_OBJECT_LIMIT_PROCESS_TIME |         # 限制进程时间
-                win32job.JOB_OBJECT_LIMIT_JOB_MEMORY |           # 限制作业内存
-                win32job.JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION |  # 异常时终止
-                win32job.JOB_OBJECT_LIMIT_BREAWAY_ON_MSG_QUIT |  # 消息退出时中断
-                win32job.JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK |  # 静默中断
-                win32job.JOB_OBJECT_LIMIT_ONLY_SELF             # 只允许自进程
-            )
+            # 2. 检查权限并根据权限级别设置适当的限制
+            has_admin = self.check_admin()
             
-            # 设置严格的资源限制
-            job_info['ProcessMemoryLimit'] = 256 * 1024 * 1024    # 256MB内存限制（更严格）
-            job_info['JobMemoryLimit'] = 256 * 1024 * 1024        # 作业总内存限制
-            job_info['MinimumWorkingSetSize'] = 32 * 1024 * 1024  # 最小工作集 32MB
-            job_info['MaximumWorkingSetSize'] = 128 * 1024 * 1024 # 最大工作集 128MB
+            if has_admin:
+                # 管理员模式：启用特权并设置完整限制
+                try:
+                    process_token = win32security.OpenProcessToken(
+                        win32api.GetCurrentProcess(),
+                        win32security.TOKEN_ADJUST_PRIVILEGES | win32security.TOKEN_QUERY
+                    )
+                    
+                    # 创建作业对象和设置进程限制需要的特权
+                    required_privileges = [
+                        win32security.SE_ASSIGNPRIMARYTOKEN_NAME,  # 分配主令牌权限
+                        win32security.SE_INCREASE_QUOTA_NAME,     # 增加配额权限
+                        win32security.SE_DEBUG_NAME,              # 调试权限
+                        win32security.SE_SYSTEM_ENVIRONMENT_NAME   # 系统环境权限
+                    ]
+                    
+                    for privilege in required_privileges:
+                        try:
+                            privilege_luid = win32security.LookupPrivilegeValue(None, privilege)
+                            result = win32security.AdjustTokenPrivileges(
+                                process_token,
+                                False,
+                                [(privilege_luid, win32security.SE_PRIVILEGE_ENABLED)]
+                            )
+                            self.log(f"已启用权限 {privilege}: {result}")
+                        except Exception as e:
+                            self.log(f"启用权限 {privilege} 失败: {str(e)}")
+                    
+                    win32security.CloseHandle(process_token)
+                    
+                    # 设置完整的进程限制
+                    job_info['BasicLimitInformation']['LimitFlags'] = (
+                        win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE |
+                        win32job.JOB_OBJECT_LIMIT_BREAKAWAY_OK
+                    )
+                    
+                    # 尝试设置高级限制（可能需要额外特权）
+                    try:
+                        job_info['BasicLimitInformation']['LimitFlags'] |= (
+                            win32job.JOB_OBJECT_LIMIT_PROCESS_TIME |
+                            win32job.JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION
+                        )
+                        self.log("已设置高级进程限制")
+                    except Exception as e:
+                        self.log(f"设置高级限制失败: {str(e)}")
+                    
+                except Exception as e:
+                    self.log(f"权限设置失败: {str(e)}")
+                    has_admin = False  # 降级为非管理员模式
             
-            # 设置时间限制（15分钟，更严格）
-            job_info['BasicLimitInformation']['PerProcessUserTimeLimit'] = 9000000000  # 100纳秒单位
+            if not has_admin:
+                # 非管理员模式：只设置基本限制
+                self.log("使用基本沙箱模式（非管理员权限）")
+                job_info['BasicLimitInformation']['LimitFlags'] = (
+                    win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE |
+                    win32job.JOB_OBJECT_LIMIT_BREAKAWAY_OK
+                )
             
-            # 防止进程创建子进程
-            job_info['BasicLimitInformation']['LimitFlags'] |= win32job.JOB_OBJECT_LIMIT_ONLY_SELF
-            
-            # 设置异常处理
-            job_info['BasicLimitInformation']['LimitFlags'] |= (
-                win32job.JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION |
-                win32job.JOB_OBJECT_LIMIT_BREAWAY_ON_MSG_QUIT
-            )
+            # 直接使用原始的job_info字典，它包含了所有必要的字段
+            # 我们只修改了需要更改的字段，其他字段保持原始值不变
             
             # 应用增强限制
             win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, job_info)
@@ -6005,7 +6038,7 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
                 raise ValueError(f"工作目录必须是字符串: {type(sandbox_dirs['work']).__name__}")
             
             # 确保所有必要的win32参数都是有效的
-            if not isinstance(security_attributes, win32security.SECURITY_ATTRIBUTES):
+            if not hasattr(security_attributes, 'bInheritHandle'):
                 raise ValueError("安全属性必须是有效的SECURITY_ATTRIBUTES对象")
             
             process_handle, thread_handle, process_id, thread_id = win32process.CreateProcess(
@@ -6158,12 +6191,8 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
             # 1. 严格的I/O限制设置
             io_limit_info = win32job.QueryInformationJobObject(job_handle, win32job.JobObjectExtendedLimitInformation)
             
-            # 设置I/O频率限制 - 防止通过大量文件操作逃逸
-            io_limit_info['IoLimitRate'] = 100  # 每秒最大I/O操作数
-            io_limit_info['IoLimitSubsystem'] = win32job.JOB_OBJECT_IO_LIMIT_CONTROL_FILES
-            io_limit_info['ControlFlags'] |= win32job.JOB_OBJECT_CONTROL_ENABLE_IO_ACOUNTING
-            
-            win32job.SetInformationJobObject(job_handle, win32job.JobObjectExtendedLimitInformation, io_limit_info)
+            # 移除了无效的I/O限制设置，因为win32job模块不支持这些功能
+            # 保留其他文件系统限制功能
             
             # 2. 设置文件系统白名单 - 只允许访问沙箱目录和系统必要路径
             allowed_paths = set()
