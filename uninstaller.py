@@ -5,49 +5,100 @@ import winreg
 import shutil
 import time
 import ctypes
-import psutil
-import random
-import hashlib
-import mimetypes
-from tkinter import Tk, Label, Listbox, Button, Scrollbar, Frame, messagebox, Entry, Checkbutton, BooleanVar, StringVar, Text, Radiobutton, font, filedialog, Menu
-from tkinter import ttk
-
-# 尝试导入PIL用于自定义图标
-try:
-    from PIL import Image, ImageTk
-    PIL_AVAILABLE = True
-except ImportError:
-    PIL_AVAILABLE = False
 import threading
 from threading import Lock, Event
 from multiprocessing import Value
 import tkinter as tk
+from tkinter import Tk, Label, Listbox, Button, Scrollbar, Frame, messagebox, Entry, Checkbutton, BooleanVar, StringVar, Text, Radiobutton, font, filedialog, Menu
+from tkinter import ttk
 import re
 import stat
-import win32api
-import win32con
-import win32process
-import win32security
-import win32job
-import win32gui
 import traceback
-import pystray
-from PIL import Image, ImageDraw
+import platform
 
-# 尝试导入win32file，如果失败则使用备用方案
+# 可选模块导入和可用性检查
+
+# 尝试导入PIL
+PIL_AVAILABLE = False
+try:
+    from PIL import Image, ImageTk, ImageDraw
+    PIL_AVAILABLE = True
+except ImportError:
+    print("⚠️ PIL模块不可用，将使用内置图标")
+
+# 尝试导入pystray
+try:
+    import pystray
+    PYSTRAY_AVAILABLE = True
+except ImportError:
+    pystray = None
+    PYSTRAY_AVAILABLE = False
+    print("⚠️ pystray模块不可用，将不支持系统托盘功能")
+
+# 尝试导入win32系列模块
+WIN32API_AVAILABLE = False
+try:
+    import win32api
+    import win32con
+    import win32process
+    import win32security
+    import win32job
+    import win32gui
+    WIN32API_AVAILABLE = True
+except ImportError:
+    print("⚠️ 部分win32模块不可用，部分高级功能可能受限")
+
+# 尝试导入win32file
 try:
     import win32file
     WIN32FILE_AVAILABLE = True
 except ImportError:
+    win32file = None
     WIN32FILE_AVAILABLE = False
     print("⚠️ win32file模块不可用，将使用替代方案")
 
-# 导入加密管理器
+# 尝试导入psutil
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    psutil = None
+    PSUTIL_AVAILABLE = False
+    print("⚠️ psutil模块不可用，部分系统信息功能可能受限")
+
+# 尝试导入其他可选模块
+try:
+    import hashlib
+    HASH_AVAILABLE = True
+except ImportError:
+    hashlib = None
+    HASH_AVAILABLE = False
+    print("⚠️ hashlib模块不可用，部分文件哈希功能可能受限")
+
+try:
+    import random
+    RANDOM_AVAILABLE = True
+except ImportError:
+    random = None
+    RANDOM_AVAILABLE = False
+    print("⚠️ random模块不可用，部分随机功能可能受限")
+
+try:
+    import mimetypes
+    MIMETYPES_AVAILABLE = True
+except ImportError:
+    mimetypes = None
+    MIMETYPES_AVAILABLE = False
+    print("⚠️ mimetypes模块不可用，部分文件类型识别功能可能受限")
+
+# 尝试导入加密管理器
 try:
     from simple_encryption import SimpleEncryptionManager
     ENCRYPTION_AVAILABLE = True
 except ImportError:
+    SimpleEncryptionManager = None
     ENCRYPTION_AVAILABLE = False
+    print("⚠️ 加密模块不可用，将不支持加密功能")
 
 class ModernButton(Button):
     """自定义现代化按钮类"""
@@ -118,6 +169,9 @@ class UninstallerApp:
         self.button_color = "#4a90e2"  # 蓝色按钮
         self.list_bg = "#f9f9f9"  # 列表背景
         self.highlight_color = "#357abd"  # 高亮色
+        
+        # 检测系统和Python环境
+        self._detect_environment()
         
         # 设置窗口背景
         self.root.configure(bg=self.bg_color)
@@ -509,19 +563,140 @@ class UninstallerApp:
             # 如果log_text还未初始化，则使用print记录
             print(f"初始化日志记录: {e}")
     
-    def log(self, message):
-        """显示日志信息"""
+    def log(self, message, level="INFO", module="main"):
+        """显示日志信息并保存到文件
+        
+        参数:
+            message: 日志消息
+            level: 日志级别 (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+            module: 模块名称，用于标识日志来源
+        """
         try:
-            # 添加时间戳
-            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-            log_message = f"[{timestamp}] {message}"
+            # 检查日志级别
+            log_levels = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3, "CRITICAL": 4}
+            if log_levels.get(level, 1) < log_levels.get(getattr(self, 'log_level', 'INFO'), 1):
+                return
+                
+            # 添加时间戳和上下文信息
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")  # 兼容Python 3.5及以下版本
+            thread_id = threading.current_thread().ident
+            log_message = "[%s] [%s] [%s] [Thread-%d] %s" % (timestamp, level, module, thread_id, message)
             
-            self.log_text.config(state="normal")
-            self.log_text.insert("end", log_message + "\n")
-            self.log_text.see("end")
-            self.log_text.config(state="disabled")
+            # 输出到控制台（根据级别设置颜色）
+            if level == "ERROR" or level == "CRITICAL":
+                print(f"\033[91m{log_message}\033[0m")  # 红色
+            elif level == "WARNING":
+                print(f"\033[93m{log_message}\033[0m")  # 黄色
+            elif level == "DEBUG":
+                print(f"\033[94m{log_message}\033[0m")  # 蓝色
+            else:
+                print(log_message)  # 正常颜色
+            
+            # 写入日志文件
+            try:
+                log_folder = "logs"
+                # 创建日志文件夹（如果不存在）
+                if not os.path.exists(log_folder):
+                    os.makedirs(log_folder)
+                
+                log_filename = os.path.join(log_folder, f"uninstaller_{time.strftime('%Y%m%d')}.log")
+                
+                with open(log_filename, "a", encoding="utf-8") as log_file:
+                    log_file.write(log_message + "\n")
+            except Exception as file_error:
+                print(f"写入日志文件失败: {file_error}")
+            
+            # 显示在GUI日志控件（如果可用）
+            try:
+                if hasattr(self, 'log_text') and self.log_text is not None:
+                    self.log_text.config(state="normal")
+                    self.log_text.insert("end", log_message + "\n")
+                    self.log_text.see("end")
+                    self.log_text.config(state="disabled")
+            except Exception as gui_error:
+                # 忽略GUI相关错误，继续执行
+                pass
         except Exception as e:
             print(f"记录日志失败: {e}")
+            try:
+                # 即使主日志记录失败，也要尝试写入日志文件
+                timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                error_message = f"[{timestamp}] 日志系统错误: {str(e)}"
+                with open("uninstaller.log", "a", encoding="utf-8") as log_file:
+                    log_file.write(error_message + "\n")
+            except:
+                pass
+    
+    def _detect_environment(self):
+        """检测系统和Python环境，设置兼容性标志"""
+        try:
+            # 检测Windows版本
+            if platform.system() == "Windows":
+                win_ver = platform.win32_ver()
+                self.windows_version = {
+                    "major": win_ver[0],
+                    "minor": win_ver[1],
+                    "build": win_ver[2],
+                    "service_pack": win_ver[3]
+                }
+                
+                # 设置Windows版本兼容性标志
+                self.is_win7_or_older = False
+                self.is_win10_or_newer = False
+                
+                try:
+                    win_major = int(self.windows_version["major"])
+                    win_minor = int(self.windows_version["minor"])
+                    
+                    if win_major < 6 or (win_major == 6 and win_minor < 2):
+                        self.is_win7_or_older = True
+                    if win_major >= 10 or (win_major == 6 and win_minor >= 2):
+                        self.is_win10_or_newer = True
+                except:
+                    pass
+                
+                win_info = f"Windows {self.windows_version['major']}.{self.windows_version['minor']} "
+                if self.windows_version['build']:
+                    win_info += f"(Build {self.windows_version['build']}) "
+                if self.windows_version['service_pack']:
+                    win_info += f"{self.windows_version['service_pack']}"
+            else:
+                self.windows_version = None
+                self.is_win7_or_older = False
+                self.is_win10_or_newer = False
+                win_info = "非Windows系统"
+            
+            # 检测Python版本
+            py_ver = platform.python_version_tuple()
+            self.python_version = {
+                "major": int(py_ver[0]),
+                "minor": int(py_ver[1]),
+                "patch": int(py_ver[2]) if len(py_ver) > 2 else 0
+            }
+            
+            py_info = f"Python {self.python_version['major']}.{self.python_version['minor']}.{self.python_version['patch']}"
+            
+            # 记录环境信息
+            self.log(f"系统环境: {win_info}", "INFO", "env")
+            self.log(f"Python环境: {py_info}", "INFO", "env")
+            
+            # 根据Python版本设置兼容性标志
+            self.is_python35_or_older = (self.python_version['major'] == 3 and self.python_version['minor'] <= 5)
+            
+            if self.is_python35_or_older:
+                self.log("⚠️ 检测到Python 3.5或更早版本，部分功能可能受限", "WARNING", "env")
+            
+            if self.is_win7_or_older:
+                self.log("⚠️ 检测到Windows 7或更早版本，部分功能可能受限", "WARNING", "env")
+                
+        except Exception as e:
+            self.log(f"环境检测失败: {str(e)}", "ERROR", "env")
+            # 设置默认兼容性标志
+            self.windows_version = None
+            self.python_version = None
+            self.is_win7_or_older = False
+            self.is_win10_or_newer = False
+            self.is_python35_or_older = False
     
     def get_disk_info(self):
         """获取系统磁盘信息"""
@@ -1085,6 +1260,7 @@ class UninstallerApp:
     
     def _scan_registry(self, hive, key_path):
         """扫描指定注册表路径"""
+        key = None
         try:
             key = winreg.OpenKey(hive, key_path)
             for i in range(0, winreg.QueryInfoKey(key)[0]):
@@ -1124,8 +1300,15 @@ class UninstallerApp:
                         pass
                 except:
                     pass
-        except:
-            pass
+        except Exception as e:
+            self.log(f"扫描注册表路径 {key_path} 失败: {str(e)}")
+        finally:
+            # 确保关闭主键
+            if key is not None:
+                try:
+                    winreg.CloseKey(key)
+                except Exception as e:
+                    self.log(f"关闭注册表主键 {key_path} 失败: {str(e)}")
     
     def _is_self_program(self, program_name):
         """检查是否为本程序"""
@@ -9524,50 +9707,82 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
     
     def _setup_tray_icon(self):
         """设置系统托盘图标（使用pystray库）"""
+        # 检查pystray模块是否可用
+        if not PYSTRAY_AVAILABLE:
+            self.log("系统托盘功能不可用：pystray模块未安装")
+            # 恢复默认的窗口关闭行为
+            self.root.protocol("WM_DELETE_WINDOW", self._exit_program)
+            return
+        
+        # 检查PIL是否可用
+        if not PIL_AVAILABLE:
+            self.log("系统托盘功能不可用：PIL模块未安装")
+            # 恢复默认的窗口关闭行为
+            self.root.protocol("WM_DELETE_WINDOW", self._exit_program)
+            return
+            
         try:
             # 为窗口添加关闭事件处理
             self.root.protocol("WM_DELETE_WINDOW", self._minimize_to_tray)
             
             # 创建一个简单的托盘图标
             def create_image(width, height, color1, color2):
-                # 创建一个图像
-                image = Image.new('RGB', (width, height), color1)
-                draw = ImageDraw.Draw(image)
-                
-                # 在图像上绘制一个简单的X形状
-                draw.line((0, 0, width, height), fill=color2, width=3)
-                draw.line((0, height, width, 0), fill=color2, width=3)
-                
-                return image
+                try:
+                    # 创建一个图像
+                    image = Image.new('RGB', (width, height), color1)
+                    draw = ImageDraw.Draw(image)
+                    
+                    # 在图像上绘制一个简单的X形状
+                    draw.line((0, 0, width, height), fill=color2, width=3)
+                    draw.line((0, height, width, 0), fill=color2, width=3)
+                    
+                    return image
+                except Exception as e:
+                    self.log(f"创建托盘图标时出错: {str(e)}")
+                    return None
             
             # 创建图标
             self.tray_icon_image = create_image(64, 64, 'blue', 'white')
             
-            # 创建菜单
-            menu = (
-                pystray.MenuItem('显示窗口', self._show_window),
-                pystray.MenuItem('刷新程序列表', self.refresh_list),
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem('退出程序', self._exit_program)
-            )
+            if self.tray_icon_image is None:
+                self.log("无法创建托盘图标，将禁用托盘功能")
+                # 恢复默认的窗口关闭行为
+                self.root.protocol("WM_DELETE_WINDOW", self._exit_program)
+                return
             
-            # 创建托盘实例
-            self.tray = pystray.Icon(
-                "强力卸载工具",
-                self.tray_icon_image,
-                "强力卸载工具",
-                menu
-            )
-            
-            # 启动托盘图标（在单独的线程中运行）
-            import threading
-            self.tray_thread = threading.Thread(target=self.tray.run, daemon=True)
-            self.tray_thread.start()
-            
-            self.log("已成功设置系统托盘图标")
+            try:
+                # 创建菜单
+                menu = (
+                    pystray.MenuItem('显示窗口', self._show_window),
+                    pystray.MenuItem('刷新程序列表', self.refresh_list),
+                    pystray.Menu.SEPARATOR,
+                    pystray.MenuItem('退出程序', self._exit_program)
+                )
+                
+                # 创建托盘实例
+                self.tray = pystray.Icon(
+                    "强力卸载工具",
+                    self.tray_icon_image,
+                    "强力卸载工具",
+                    menu
+                )
+                
+                # 启动托盘图标（在单独的线程中运行）
+                import threading
+                self.tray_thread = threading.Thread(target=self.tray.run, daemon=True)
+                self.tray_thread.start()
+                
+                self.log("已成功设置系统托盘图标")
+            except Exception as e:
+                self.log(f"设置托盘菜单或实例时出错: {str(e)}")
+                # 恢复默认的窗口关闭行为
+                self.root.protocol("WM_DELETE_WINDOW", self._exit_program)
+                traceback.print_exc()
             
         except Exception as e:
             self.log(f"设置托盘图标时出错: {str(e)}")
+            # 恢复默认的窗口关闭行为
+            self.root.protocol("WM_DELETE_WINDOW", self._exit_program)
             traceback.print_exc()
     
     def _minimize_to_tray(self):
