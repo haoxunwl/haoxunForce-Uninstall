@@ -9,8 +9,15 @@ import psutil
 import random
 import hashlib
 import mimetypes
-from tkinter import Tk, Label, Listbox, Button, Scrollbar, Frame, messagebox, Entry, Checkbutton, BooleanVar, StringVar, Text, Radiobutton, font, filedialog
+from tkinter import Tk, Label, Listbox, Button, Scrollbar, Frame, messagebox, Entry, Checkbutton, BooleanVar, StringVar, Text, Radiobutton, font, filedialog, Menu
 from tkinter import ttk
+
+# 尝试导入PIL用于自定义图标
+try:
+    from PIL import Image, ImageTk
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
 import threading
 from threading import Lock, Event
 from multiprocessing import Value
@@ -22,6 +29,10 @@ import win32con
 import win32process
 import win32security
 import win32job
+import win32gui
+import traceback
+import pystray
+from PIL import Image, ImageDraw
 
 # 尝试导入win32file，如果失败则使用备用方案
 try:
@@ -130,6 +141,8 @@ class UninstallerApp:
         # 创建主框架
         self.main_frame = Frame(root, bg=self.bg_color, padx=10, pady=10)
         self.main_frame.pack(fill="both", expand=True)
+        
+        # 初始化托盘功能将在log_text创建后调用
         
         # 标题标签
         self.title_label = Label(
@@ -465,6 +478,9 @@ class UninstallerApp:
         
         self.log_text = Text(self.log_frame, height=20, width=45)
         self.log_text.pack(fill="both", expand=True)
+        
+        # 现在log_text已经创建，可以初始化托盘功能了
+        self._setup_tray_icon()
         
         # 磁盘信息面板
         self.disk_info_frame = Frame(self.right_frame, bg=self.bg_color, relief="sunken", bd=1)
@@ -5783,12 +5799,31 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
             if not sandbox_dirs['work'] or not os.path.exists(sandbox_dirs['work']):
                 raise ValueError(f"无效的工作目录: {sandbox_dirs['work']}")
             
-            # 确保环境变量中没有None值
+            # 增强的环境变量验证 - 确保所有值都是字符串
             if sandbox_env:
                 for key, value in list(sandbox_env.items()):
                     if value is None:
                         del sandbox_env[key]
                         self.log(f"移除了None值的环境变量: {key}")
+                    elif not isinstance(value, str):
+                        # 转换非字符串值为字符串
+                        sandbox_env[key] = str(value)
+                        self.log(f"转换环境变量类型: {key} -> {type(value).__name__} to string")
+            
+            # 确保startup_info.lpTitle是字符串
+            if not isinstance(startup_info.lpTitle, str):
+                startup_info.lpTitle = str(startup_info.lpTitle)
+                
+            # 增强的参数验证
+            if not isinstance(exe_path, str):
+                raise ValueError(f"可执行文件路径必须是字符串: {type(exe_path).__name__}")
+            
+            if not isinstance(sandbox_dirs['work'], str):
+                raise ValueError(f"工作目录必须是字符串: {type(sandbox_dirs['work']).__name__}")
+            
+            # 确保所有必要的win32参数都是有效的
+            if not isinstance(security_attributes, win32security.SECURITY_ATTRIBUTES):
+                raise ValueError("安全属性必须是有效的SECURITY_ATTRIBUTES对象")
             
             process_handle, thread_handle, process_id, thread_id = win32process.CreateProcess(
                 exe_path,
@@ -5856,6 +5891,11 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
         env = os.environ.copy()
         
         # 1. 修改临时目录指向沙箱（防止临时文件逃逸）
+        # 确保所有目录路径都是字符串
+        for dir_name, dir_path in sandbox_dirs.items():
+            if not isinstance(dir_path, str):
+                raise ValueError(f"沙箱目录路径必须是字符串: {dir_name} -> {type(dir_path).__name__}")
+                
         env['TEMP'] = sandbox_dirs['temp']
         env['TMP'] = sandbox_dirs['temp']
         env['LOCALAPPDATA'] = sandbox_dirs['cache']
@@ -9481,6 +9521,94 @@ sys.exit(0 if ctypes.windll.shell32.IsUserAnAdmin() else 1)
             if 'scan_duration' in summary:
                 self.log(f"⏱️ 扫描性能 - 用时: {summary['scan_duration']}, "
                         f"速度: {summary.get('files_per_second', '0')} 文件/秒")
+    
+    def _setup_tray_icon(self):
+        """设置系统托盘图标（使用pystray库）"""
+        try:
+            # 为窗口添加关闭事件处理
+            self.root.protocol("WM_DELETE_WINDOW", self._minimize_to_tray)
+            
+            # 创建一个简单的托盘图标
+            def create_image(width, height, color1, color2):
+                # 创建一个图像
+                image = Image.new('RGB', (width, height), color1)
+                draw = ImageDraw.Draw(image)
+                
+                # 在图像上绘制一个简单的X形状
+                draw.line((0, 0, width, height), fill=color2, width=3)
+                draw.line((0, height, width, 0), fill=color2, width=3)
+                
+                return image
+            
+            # 创建图标
+            self.tray_icon_image = create_image(64, 64, 'blue', 'white')
+            
+            # 创建菜单
+            menu = (
+                pystray.MenuItem('显示窗口', self._show_window),
+                pystray.MenuItem('刷新程序列表', self.refresh_list),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem('退出程序', self._exit_program)
+            )
+            
+            # 创建托盘实例
+            self.tray = pystray.Icon(
+                "强力卸载工具",
+                self.tray_icon_image,
+                "强力卸载工具",
+                menu
+            )
+            
+            # 启动托盘图标（在单独的线程中运行）
+            import threading
+            self.tray_thread = threading.Thread(target=self.tray.run, daemon=True)
+            self.tray_thread.start()
+            
+            self.log("已成功设置系统托盘图标")
+            
+        except Exception as e:
+            self.log(f"设置托盘图标时出错: {str(e)}")
+            traceback.print_exc()
+    
+    def _minimize_to_tray(self):
+        """最小化窗口到托盘"""
+        try:
+            # 隐藏主窗口
+            self.root.withdraw()
+            
+            self.log("窗口已最小化到系统托盘")
+        except Exception as e:
+            self.log(f"最小化到托盘时出错: {str(e)}")
+            traceback.print_exc()
+    
+    def _show_window(self):
+        """显示主窗口"""
+        try:
+            # 显示主窗口
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
+            
+            self.log("已从系统托盘恢复窗口")
+        except Exception as e:
+            self.log(f"显示窗口时出错: {str(e)}")
+            traceback.print_exc()
+    
+    def _exit_program(self):
+        """退出程序"""
+        try:
+            # 停止托盘图标
+            if hasattr(self, 'tray'):
+                self.tray.stop()
+            
+            # 销毁主窗口
+            self.root.destroy()
+            
+            self.log("程序已退出")
+            sys.exit(0)
+        except Exception as e:
+            self.log(f"退出程序时出错: {str(e)}")
+            sys.exit(1)
 
 def run_as_admin():
     """尝试以管理员权限重新启动程序"""
@@ -9573,7 +9701,7 @@ def is_admin():
 
 if __name__ == "__main__":
     # 调试模式 - 跳过管理员权限检查以便测试UI功能
-    debug_mode = False  # 设置为False以恢复正常权限检查
+    debug_mode = True  # 设置为False以恢复正常权限检查
     
     if debug_mode:
         print("调试模式：跳过管理员权限检查")
